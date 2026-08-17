@@ -1,0 +1,27 @@
+{
+  "listen_addr": "127.0.0.1:15721",
+  "upstream_base_url": "https://api.kimi.com/coding/v1",
+  "local_api_key": "local-kimi-switch",
+  "active_key": "work",
+  "rotation": {
+    "enabled": false,
+    "mode": "request",
+    "max_attempts": 2,
+    "cooldown_seconds": 300,
+    "retry_rate_limited": true
+  },
+  "keys": [
+    {
+      "name": "work",
+      "account": "work-account",
+      "api_key_env": "KIMI_WORK_KEY",
+      "enabled": true
+    },
+    {
+      "name": "personal",
+      "account": "personal-account",
+      "api_key_env": "KIMI_PERSONAL_KEY",
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+.DS_Store
+/bin/
+/dist/
+/node_modules/
+/src-tauri/target/
+/src-tauri/binaries/
+/src-tauri/gen/
+/KimiSwitch_*.dmg
+*.test
+*.out
