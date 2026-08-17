@@ -1,6 +1,6 @@
 [package]
 name = "kimi-switch-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local Kimi Code account switcher and proxy"
 authors = ["KimiSwitch contributors"]
 edition = "2021"

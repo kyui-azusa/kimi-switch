@@ -37,12 +37,15 @@ const outputPath = join(
   binaryDirectory,
   `kimi-switch-proxy-${targetTriple}${executableSuffix}`,
 );
+const linkerArgs = targetTriple.includes("windows")
+  ? ["-ldflags", "-H=windowsgui"]
+  : [];
 
 mkdirSync(binaryDirectory, { recursive: true });
 
 const result = spawnSync(
   "go",
-  ["build", "-o", outputPath, "./cmd/kimi-switch"],
+  ["build", ...linkerArgs, "-o", outputPath, "./cmd/kimi-switch"],
   { cwd: projectDirectory, stdio: "inherit" },
 );
 

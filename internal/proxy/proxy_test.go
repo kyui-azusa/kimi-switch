@@ -153,6 +153,17 @@ func TestDesktopCORS(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodOptions, "/api/status", nil)
+	request.Header.Set("Origin", "http://tauri.localhost")
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("Windows Tauri status = %d", response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://tauri.localhost" {
+		t.Fatalf("Windows Tauri allow origin = %q", got)
+	}
+
+	request = httptest.NewRequest(http.MethodOptions, "/api/status", nil)
 	request.Header.Set("Origin", "null")
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, request)

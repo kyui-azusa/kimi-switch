@@ -54,7 +54,7 @@ function formatNumber(value = 0) {
 }
 
 function sourceLabel(key: KeyConfig) {
-  if (key.source === "keychain") return "macOS Keychain";
+  if (key.source === "keychain") return "系统凭据库";
   if (key.source === "environment") return key.api_key_env || "环境变量";
   return "本地配置";
 }
@@ -152,7 +152,7 @@ function AccountForm({ current, onBack, onSaved, notify }: {
   return (
     <FullScreenPanel
       title={current ? "编辑账号" : "添加账号"}
-      subtitle="Kimi Code API Key 会保存到 macOS Keychain"
+      subtitle="Kimi Code API Key 会保存到系统凭据库"
       onBack={onBack}
       footer={<><Button variant="outline" onClick={onBack}>取消</Button><Button onClick={save} disabled={saving}>{saving ? "保存中…" : current ? "保存修改" : "添加账号"}</Button></>}
     >
@@ -174,7 +174,7 @@ function AccountForm({ current, onBack, onSaved, notify }: {
           <div><h2 className="font-semibold">认证信息</h2><p className="text-sm text-muted-foreground">API Key 和环境变量二选一</p></div>
         </div>
         <div className="grid gap-5">
-          <Field label="Kimi Code API Key" hint={current ? "编辑时留空表示保留原 Key。新 Key 只写入 Keychain，不写入配置文件。" : "保存后写入 macOS Keychain，不会明文出现在 KimiSwitch 配置中。"}>
+          <Field label="Kimi Code API Key" hint={current ? "编辑时留空表示保留原 Key。新 Key 只写入系统凭据库，不写入配置文件。" : "保存后写入 macOS Keychain 或 Windows Credential Manager，不会明文出现在 KimiSwitch 配置中。"}>
             <input className={fieldClass} type="password" value={form.api_key} onChange={(e) => update("api_key", e.target.value)} placeholder={current ? "留空以保留原 Key" : "粘贴 API Key"} autoComplete="new-password" />
           </Field>
           <div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />或者<span className="h-px flex-1 bg-border" /></div>
@@ -263,7 +263,7 @@ function ImportPanel({ onBack, onImported, notify }: { onBack: () => void; onImp
   return (
     <FullScreenPanel title="导入 Kimi 配置" subtitle="读取现有 provider，原配置不会被修改" onBack={onBack} footer={<><Button variant="outline" onClick={onBack}>取消</Button><Button onClick={run} disabled={busy}><Download className="h-4 w-4" />{busy ? "正在导入…" : "开始导入"}</Button></>}>
       <section className="rounded-xl border border-border bg-card p-7 shadow-sm">
-        <div className="flex items-start gap-4"><div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500"><Download className="h-6 w-6" /></div><div><h2 className="text-lg font-semibold">从 Kimi Code 导入</h2><p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">识别 config.toml 中使用 API Key 的 providers，把 Key 安全地复制到 macOS Keychain。OAuth 登录项会跳过。</p></div></div>
+        <div className="flex items-start gap-4"><div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-blue-500/10 text-blue-500"><Download className="h-6 w-6" /></div><div><h2 className="text-lg font-semibold">从 Kimi Code 导入</h2><p className="mt-1 max-w-xl text-sm leading-6 text-muted-foreground">识别 config.toml 中使用 API Key 的 providers，把 Key 安全地复制到系统凭据库。OAuth 登录项会跳过。</p></div></div>
         <div className="mt-7"><Field label="配置文件路径" hint="默认读取 ~/.kimi-code/config.toml；如公司有单独配置，可以填写绝对路径。"><input className={fieldClass} value={path} onChange={(e) => setPath(e.target.value)} /></Field></div>
         <div className="mt-6 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm leading-6 text-emerald-700 dark:text-emerald-300"><ShieldCheck className="mr-2 inline h-4 w-4" />只读 Kimi 配置，不会覆盖、删除或重写原文件。</div>
       </section>
@@ -595,7 +595,7 @@ export default function App() {
           <section className="w-full max-w-md rounded-2xl border border-border bg-card p-6 text-card-foreground shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-title">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-red-500/10 text-red-500"><Trash2 className="h-5 w-5" /></div>
             <h2 id="delete-title" className="mt-4 text-lg font-semibold">删除账号“{deleteTarget.name}”？</h2>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">这会删除 KimiSwitch 中的账号记录和本地统计。macOS Keychain 中的原始 Key 不会被删除。</p>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">这会删除 KimiSwitch 中的账号记录和本地统计。系统凭据库中的原始 Key 不会被删除。</p>
             {status.config.active_key === deleteTarget.name && <p className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">这是当前账号；删除后会自动切换到下一条可用记录。</p>}
             <div className="mt-6 flex justify-end gap-2"><Button variant="outline" disabled={deleting} onClick={() => setDeleteTarget(null)}>取消</Button><Button disabled={deleting} className="bg-red-500 text-white hover:bg-red-600" onClick={() => void confirmDelete()}>{deleting ? "删除中…" : "确认删除"}</Button></div>
           </section>

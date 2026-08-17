@@ -7,7 +7,7 @@ Its desktop information architecture, visual tokens, and selected UI wrappers ar
 ## What it does
 
 - Runs a loopback proxy on `127.0.0.1:15721`.
-- Keeps Kimi API keys in environment variables or macOS Keychain instead of command-line arguments.
+- Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) instead of command-line arguments.
 - Supports manual active-key switching.
 - Supports an optional automatic rotation mode:
   - `request`: recommended mode; least-requested-key routing, which keeps call frequency/order as even as possible.
@@ -58,7 +58,7 @@ The bundled app and installer show the original KimiSwitch icon and the attribut
 
 The GitHub Actions workflow in `.github/workflows/build-installers.yml` builds a macOS DMG and a Windows NSIS setup EXE on version tags such as `v0.1.0`, or when started manually from the Actions page. Each installer is uploaded as a workflow artifact. The generated builds are unsigned until Apple and Windows signing credentials are configured.
 
-For macOS Keychain storage:
+For system credential storage:
 
 ```sh
 go run ./cmd/kimi-switch secret-set kimi-switch/work
@@ -86,7 +86,7 @@ The local proxy consumes the client key and injects the selected upstream key. T
 
 ## Import existing Kimi providers
 
-KimiSwitch can extract `api_key` from `[providers.<name>]` or `KIMI_API_KEY` from `[providers.<name>.env]` in `~/.kimi-code/config.toml` and copy the values into macOS Keychain. It does not rewrite or delete the Kimi config:
+KimiSwitch can extract `api_key` from `[providers.<name>]` or `KIMI_API_KEY` from `[providers.<name>.env]` in `~/.kimi-code/config.toml` and copy the values into macOS Keychain or Windows Credential Manager. It does not rewrite or delete the Kimi config:
 
 ```sh
 go run ./cmd/kimi-switch init
