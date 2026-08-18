@@ -6,15 +6,31 @@ import (
 	"os"
 	"os/user"
 	"strings"
+	"time"
 
 	keyring "github.com/zalando/go-keyring"
 )
 
+const transientReadRetryCount = 3
+
+var (
+	keyringGet = keyring.Get
+	retrySleep = time.Sleep
+)
+
 func Read(service string) (string, error) {
 	account := currentAccount()
-	value, err := keyring.Get(service, account)
-	if err != nil {
-		return "", fmt.Errorf("read system credential %q: %w", service, err)
+	var value string
+	var err error
+	for attempt := 1; attempt <= transientReadRetryCount; attempt++ {
+		value, err = keyringGet(service, account)
+		if err == nil {
+			break
+		}
+		if !isTransientReadError(err) || attempt == transientReadRetryCount {
+			return "", fmt.Errorf("read system credential %q: %w", service, err)
+		}
+		retrySleep(time.Duration(attempt*50) * time.Millisecond)
 	}
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -32,6 +48,16 @@ func Write(service, value string) error {
 		return fmt.Errorf("write system credential %q: %w", service, err)
 	}
 	return nil
+}
+
+func isTransientReadError(err error) bool {
+	if err == nil || errors.Is(err, keyring.ErrNotFound) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "broken pipe") ||
+		strings.Contains(message, "signal: broken pipe") ||
+		strings.Contains(message, "connection reset by peer")
 }
 
 func currentAccount() string {
