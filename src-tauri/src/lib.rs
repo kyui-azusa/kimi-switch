@@ -10,7 +10,7 @@ use tauri_plugin_shell::{process::CommandChild, ShellExt};
 struct ProxyProcess(Mutex<Option<CommandChild>>);
 
 fn proxy_is_running() -> bool {
-    let address: SocketAddr = "127.0.0.1:15721".parse().expect("valid proxy address");
+    let address: SocketAddr = "127.0.0.1:15722".parse().expect("valid proxy address");
     TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
 }
 

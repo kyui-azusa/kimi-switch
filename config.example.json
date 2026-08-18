@@ -1,5 +1,5 @@
 {
-  "listen_addr": "127.0.0.1:15721",
+  "listen_addr": "127.0.0.1:15722",
   "upstream_base_url": "https://api.kimi.com/coding/v1",
   "local_api_key": "local-kimi-switch",
   "active_key": "work",

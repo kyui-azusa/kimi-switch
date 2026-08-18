@@ -6,7 +6,7 @@ Its desktop information architecture, visual tokens, and selected UI wrappers ar
 
 ## What it does
 
-- Runs a loopback proxy on `127.0.0.1:15721`.
+- Runs a loopback proxy on `127.0.0.1:15722`, avoiding CC Switch's default `15721` port.
 - Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) instead of command-line arguments.
 - Supports manual active-key switching.
 - Supports an optional automatic rotation mode:
@@ -78,7 +78,7 @@ The important values are conceptually:
 ```sh
 export KIMI_MODEL_NAME='kimi-for-coding'
 export KIMI_MODEL_API_KEY='local-kimi-switch'
-export KIMI_MODEL_BASE_URL='http://127.0.0.1:15721/v1'
+export KIMI_MODEL_BASE_URL='http://127.0.0.1:15722/v1'
 kimi
 ```
 

@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:15721";
+const API_BASE = "http://127.0.0.1:15722";
 const LOCAL_KEY = "local-kimi-switch";
 
 export interface RotationConfig {

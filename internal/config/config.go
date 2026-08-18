@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	DefaultListenAddr             = "127.0.0.1:15721"
+	DefaultListenAddr             = "127.0.0.1:15722"
+	LegacyDefaultListenAddr       = "127.0.0.1:15721"
 	DefaultUpstreamBase           = "https://api.kimi.com/coding/v1"
 	DefaultLocalAPIKey            = "local-kimi-switch"
 	DefaultFailureCooldownSeconds = 600
@@ -66,7 +67,7 @@ func Default() Config {
 }
 
 func (c *Config) Normalize() error {
-	if strings.TrimSpace(c.ListenAddr) == "" {
+	if strings.TrimSpace(c.ListenAddr) == "" || strings.TrimSpace(c.ListenAddr) == LegacyDefaultListenAddr {
 		c.ListenAddr = DefaultListenAddr
 	}
 	if strings.TrimSpace(c.UpstreamBaseURL) == "" {
@@ -177,7 +178,14 @@ func Save(path string, c Config) error {
 
 func Ensure(path string) (Config, error) {
 	if _, err := os.Stat(path); err == nil {
-		return Load(path)
+		c, err := Load(path)
+		if err != nil {
+			return Config{}, err
+		}
+		if err := Save(path, c); err != nil {
+			return Config{}, err
+		}
+		return c, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}

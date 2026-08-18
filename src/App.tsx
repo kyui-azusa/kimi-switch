@@ -582,7 +582,7 @@ export default function App() {
             <div className="grid gap-3">{accounts.map((item) => <AccountCard key={item.name} item={item} stats={status.keys[item.name] || emptyStats} active={status.config.active_key === item.name} rotationEnabled={status.config.rotation.enabled} testing={testingKeys.has(item.name)} onAction={action} />)}</div>
           ) : <div className="rounded-lg border border-dashed border-border p-10 text-center text-sm text-muted-foreground">没有匹配的账号</div>}
 
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15721/v1</span><span>{status.config.rotation.enabled ? `轮换已开启 · ${status.config.rotation.mode === "request" ? "按请求" : "Token 观察"}` : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15722/v1</span><span>{status.config.rotation.enabled ? `轮换已开启 · ${status.config.rotation.mode === "request" ? "按请求" : "Token 观察"}` : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
         </div>
       </main>
 

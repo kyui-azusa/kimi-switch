@@ -318,6 +318,6 @@ Commands:
   print-config                      print Kimi CLI local-proxy settings
   serve                             start the local proxy
 
-The default listener is 127.0.0.1:15721. Rotation is off by default.
+The default listener is 127.0.0.1:15722. Rotation is off by default.
 Token mode is best-effort balancing by observed/estimated token usage.`)
 }
