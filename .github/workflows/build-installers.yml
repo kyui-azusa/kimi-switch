@@ -95,6 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPDATE_DEPLOY_HOST: ${{ secrets.UPDATE_DEPLOY_HOST }}
+      UPDATE_DEPLOY_PORT: ${{ secrets.UPDATE_DEPLOY_PORT }}
       UPDATE_DEPLOY_USER: ${{ secrets.UPDATE_DEPLOY_USER }}
       UPDATE_DEPLOY_PATH: ${{ secrets.UPDATE_DEPLOY_PATH }}
       UPDATE_DEPLOY_SSH_KEY: ${{ secrets.UPDATE_DEPLOY_SSH_KEY }}
@@ -113,7 +114,11 @@ jobs:
       - name: Generate and validate latest.json
         shell: bash
         run: |
-          base_url="${UPDATE_BASE_URL:-https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}}"
+          if [ -n "$UPDATE_BASE_URL" ]; then
+            base_url="${UPDATE_BASE_URL%/}/releases/${GITHUB_REF_NAME}"
+          else
+            base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          fi
           node scripts/build-update-manifest.mjs \
             --artifacts release-artifacts \
             --output release-files \
@@ -134,6 +139,7 @@ jobs:
         shell: bash
         run: |
           test -n "$UPDATE_DEPLOY_USER"
+          test -n "$UPDATE_DEPLOY_PORT"
           test -n "$UPDATE_DEPLOY_PATH"
           test -n "$UPDATE_DEPLOY_SSH_KEY"
           test -n "$UPDATE_DEPLOY_KNOWN_HOSTS"
@@ -148,7 +154,5 @@ jobs:
         shell: bash
         run: |
           release_path="${UPDATE_DEPLOY_PATH%/}/releases/${GITHUB_REF_NAME}"
-          ssh "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}" "mkdir -p '$release_path'"
-          rsync -av --exclude latest.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
-          scp release-files/latest.json "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:${UPDATE_DEPLOY_PATH%/}/latest.json.next"
-          ssh "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}" "mv '${UPDATE_DEPLOY_PATH%/}/latest.json.next' '${UPDATE_DEPLOY_PATH%/}/latest.json'"
+          rsync -av --mkpath -e "ssh -p $UPDATE_DEPLOY_PORT" --exclude latest.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
+          rsync -av -e "ssh -p $UPDATE_DEPLOY_PORT" release-files/latest.json "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:${UPDATE_DEPLOY_PATH%/}/latest.json"

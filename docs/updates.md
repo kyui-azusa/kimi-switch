@@ -26,26 +26,31 @@ If the updater private key is lost, existing installations cannot trust artifact
 4. The publish job refuses to create `latest.json` unless all three updater archives and signatures are present.
 5. The workflow publishes versioned files first and `latest.json` last, so a partial build cannot replace the previous usable manifest.
 
-The checked-in endpoint uses GitHub Releases:
+The checked-in endpoint uses the shared update server and keeps KimiSwitch in its own application directory:
 
 ```text
-https://github.com/kyui-azusa/kimi-switch/releases/latest/download/latest.json
+https://updates.cihua.run/kimi-switch/latest.json
 ```
 
-## Optional static server
+The same host can serve other applications from sibling paths such as `/other-app/`. Give each application its own deployment account and directory so one CI key cannot overwrite another application's releases.
 
-The same workflow can mirror release files to an HTTPS static directory. Configure these repository secrets:
+## Static server
+
+The workflow mirrors release files to the HTTPS static directory. Configure these repository secrets:
 
 | Secret | Purpose |
 | --- | --- |
-| `UPDATE_BASE_URL` | Public version directory, for example `https://updates.example.com/kimi-switch/releases/v0.2.0` |
+| `UPDATE_BASE_URL` | Public application root, `https://updates.cihua.run/kimi-switch` |
 | `UPDATE_DEPLOY_HOST` | SSH host used by the publish job |
+| `UPDATE_DEPLOY_PORT` | SSH port used by the publish job |
 | `UPDATE_DEPLOY_USER` | Restricted deployment account |
 | `UPDATE_DEPLOY_PATH` | Server directory that contains `latest.json` and `releases/` |
-| `UPDATE_DEPLOY_SSH_KEY` | Private deployment key |
+| `UPDATE_DEPLOY_SSH_KEY` | Private write-only deployment key (separate from the updater signing key) |
 | `UPDATE_DEPLOY_KNOWN_HOSTS` | Pinned SSH host-key line for the deployment server |
 
-Serve `latest.json` as `application/json` with `Cache-Control: no-cache, max-age=0`. Versioned archives and `.sig` files should use long-lived immutable caching. Keep directory listing disabled and allow only HTTPS. Update the endpoint in `tauri.conf.json` when the static server becomes the primary source.
+The workflow appends `/releases/<tag>` to `UPDATE_BASE_URL` when it writes artifact URLs. Serve `latest.json` as `application/json` with `Cache-Control: no-cache, max-age=0`. Versioned archives and `.sig` files should use long-lived immutable caching. Keep directory listing disabled and allow only HTTPS.
+
+The deployment account is restricted with `rrsync -wo` to the KimiSwitch application directory. The workflow uses rsync's atomic file replacement for `latest.json`, so it does not need shell, `scp`, or `mv` access on the server.
 
 ## Rollback and recovery
 
