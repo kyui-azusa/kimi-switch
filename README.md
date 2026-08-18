@@ -4,6 +4,8 @@ KimiSwitch is a Tauri desktop app and local-only Kimi Code API-key pool for pers
 
 Its desktop information architecture, visual tokens, and selected UI wrappers are adapted from [CC Switch](https://github.com/farion1231/cc-switch) under the MIT License to keep the workflow familiar. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). KimiSwitch is not affiliated with Moonshot AI, Kimi, or the CC Switch project.
 
+Project behavior and design decisions are recorded in [`docs/`](docs/README.md).
+
 ## What it does
 
 - Runs a loopback proxy on `127.0.0.1:15722`, avoiding CC Switch's default `15721` port.
