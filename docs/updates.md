@@ -44,7 +44,7 @@ The workflow mirrors release files to the HTTPS static directory. Configure thes
 | `UPDATE_DEPLOY_HOST` | SSH host used by the publish job |
 | `UPDATE_DEPLOY_PORT` | SSH port used by the publish job |
 | `UPDATE_DEPLOY_USER` | Restricted deployment account |
-| `UPDATE_DEPLOY_PATH` | Server directory that contains `latest.json` and `releases/` |
+| `UPDATE_DEPLOY_PATH` | Path relative to the restricted rsync root (`/` for KimiSwitch) |
 | `UPDATE_DEPLOY_SSH_KEY` | Private write-only deployment key (separate from the updater signing key) |
 | `UPDATE_DEPLOY_KNOWN_HOSTS` | Pinned SSH host-key line for the deployment server |
 
