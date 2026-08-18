@@ -21,6 +21,11 @@ import (
 	"github.com/kyui-azusa/kimi-switch/internal/secret"
 )
 
+var (
+	secretReadForBackfill = secret.Read
+	configSaveForBackfill = config.Save
+)
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "kimi-switch:", err)
@@ -88,7 +93,10 @@ func serve(path string) error {
 	if err != nil {
 		return err
 	}
-	manager, err := loadManager(path)
+	c = backfillLocalAPIKeys(path, c, func(message string) {
+		fmt.Fprintln(os.Stderr, "kimi-switch:", message)
+	})
+	manager, err := rotation.NewManager(c, path, config.StatePath(c))
 	if err != nil {
 		return err
 	}
@@ -113,6 +121,32 @@ func serve(path string) error {
 		return nil
 	}
 	return err
+}
+
+func backfillLocalAPIKeys(path string, c config.Config, warn func(string)) config.Config {
+	changed := false
+	for i := range c.Keys {
+		key := &c.Keys[i]
+		if key.SecretRef == "" || key.APIKey != "" {
+			continue
+		}
+		apiKey, err := secretReadForBackfill(key.SecretRef)
+		if err != nil {
+			if warn != nil {
+				warn(fmt.Sprintf("warning: could not backfill local fallback for %q: %v", key.Name, err))
+			}
+			continue
+		}
+		key.APIKey = apiKey
+		changed = true
+	}
+	if !changed {
+		return c
+	}
+	if err := configSaveForBackfill(path, c); err != nil && warn != nil {
+		warn(fmt.Sprintf("warning: could not persist local API-key fallbacks: %v", err))
+	}
+	return c
 }
 
 func loadManager(path string) (*rotation.Manager, error) {
