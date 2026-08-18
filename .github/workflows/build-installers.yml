@@ -1,4 +1,4 @@
-name: Build installers
+name: Build and publish installers
 
 on:
   workflow_dispatch:
@@ -7,30 +7,41 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     name: ${{ matrix.name }}
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS DMG
-            platform: macos-14
+          - name: macOS Apple Silicon
+            runner: macos-14
+            target: aarch64-apple-darwin
             bundles: dmg
-            artifact: kimiswitch-macos-dmg
-            artifact_path: src-tauri/target/release/bundle/dmg/*.dmg
-          - name: Windows EXE
-            platform: windows-latest
+            artifact: kimiswitch-macos-aarch64
+          - name: macOS Intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: dmg
+            artifact: kimiswitch-macos-x86_64
+          - name: Windows x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
             bundles: nsis
-            artifact: kimiswitch-windows-exe
-            artifact_path: src-tauri/target/release/bundle/nsis/*-setup.exe
+            artifact: kimiswitch-windows-x86_64
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Verify tag matches application version
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME}" = "v${version}"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
@@ -51,21 +62,92 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ./src-tauri -> target
+          key: ${{ matrix.target }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build installer
-        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+      - name: Build signed installer and updater artifact
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-      - name: Upload installer
+      - name: Upload signed build output
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact_path }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle
           if-no-files-found: error
+
+  publish:
+    name: Publish atomic update manifest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      UPDATE_DEPLOY_HOST: ${{ secrets.UPDATE_DEPLOY_HOST }}
+      UPDATE_DEPLOY_USER: ${{ secrets.UPDATE_DEPLOY_USER }}
+      UPDATE_DEPLOY_PATH: ${{ secrets.UPDATE_DEPLOY_PATH }}
+      UPDATE_DEPLOY_SSH_KEY: ${{ secrets.UPDATE_DEPLOY_SSH_KEY }}
+      UPDATE_DEPLOY_KNOWN_HOSTS: ${{ secrets.UPDATE_DEPLOY_KNOWN_HOSTS }}
+      UPDATE_BASE_URL: ${{ secrets.UPDATE_BASE_URL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-artifacts
+
+      - name: Generate and validate latest.json
+        shell: bash
+        run: |
+          base_url="${UPDATE_BASE_URL:-https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}}"
+          node scripts/build-update-manifest.mjs \
+            --artifacts release-artifacts \
+            --output release-files \
+            --version "${GITHUB_REF_NAME}" \
+            --base-url "$base_url" \
+            --notes "KimiSwitch ${GITHUB_REF_NAME}. The first updater-enabled release must be installed manually; later releases can update in-app."
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: release-files/*
+
+      - name: Configure optional static-server SSH key
+        if: env.UPDATE_DEPLOY_HOST != ''
+        shell: bash
+        run: |
+          test -n "$UPDATE_DEPLOY_USER"
+          test -n "$UPDATE_DEPLOY_PATH"
+          test -n "$UPDATE_DEPLOY_SSH_KEY"
+          test -n "$UPDATE_DEPLOY_KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$UPDATE_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$UPDATE_DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Publish versioned static files and update manifest last
+        if: env.UPDATE_DEPLOY_HOST != ''
+        shell: bash
+        run: |
+          release_path="${UPDATE_DEPLOY_PATH%/}/releases/${GITHUB_REF_NAME}"
+          ssh "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}" "mkdir -p '$release_path'"
+          rsync -av --exclude latest.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
+          scp release-files/latest.json "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:${UPDATE_DEPLOY_PATH%/}/latest.json.next"
+          ssh "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}" "mv '${UPDATE_DEPLOY_PATH%/}/latest.json.next' '${UPDATE_DEPLOY_PATH%/}/latest.json'"

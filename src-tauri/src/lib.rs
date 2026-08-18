@@ -17,7 +17,9 @@ fn proxy_is_running() -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ProxyProcess(Mutex::new(None)))
         .setup(|app| {
             if !proxy_is_running() {

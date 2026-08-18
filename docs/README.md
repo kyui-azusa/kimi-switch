@@ -6,6 +6,7 @@
 
 - [本地代理与端口约定](networking.md)：监听地址、CC Switch 端口避让和旧配置迁移。
 - [账号健康、轮换与额度刷新](account-health.md)：失败隔离、恢复探测和刷新周期推算。
+- [应用内更新与签名发布](updates.md)：更新检查、签名密钥、发布服务器和回滚。
 
 ## 当前状态
 
@@ -14,6 +15,7 @@
 | 默认代理端口改为 `127.0.0.1:15722` | 已在 0.1.2 分支实现 | [PR #3](https://github.com/kyui-azusa/kimi-switch/pull/3) |
 | 冷却到期后先探测再恢复 | 待实现 | [Issue #1](https://github.com/kyui-azusa/kimi-switch/issues/1) |
 | 记录并推算额度刷新时间 | 待实现 | [Issue #2](https://github.com/kyui-azusa/kimi-switch/issues/2) |
+| Tauri 应用内更新与签名发布 | 已在 0.2.0 分支实现 | [Issue #4](https://github.com/kyui-azusa/kimi-switch/issues/4) |
 
 ## 边界
 

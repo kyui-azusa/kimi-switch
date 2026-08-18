@@ -5,6 +5,7 @@ KimiSwitch is a Tauri desktop app and local-only Kimi Code API-key pool for pers
 Its desktop information architecture, visual tokens, and selected UI wrappers are adapted from [CC Switch](https://github.com/farion1231/cc-switch) under the MIT License to keep the workflow familiar. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). KimiSwitch is not affiliated with Moonshot AI, Kimi, or the CC Switch project.
 
 Project behavior and design decisions are recorded in [`docs/`](docs/README.md).
+Updater signing, release-server deployment, and rollback are documented in [`docs/updates.md`](docs/updates.md).
 
 ## What it does
 
@@ -58,7 +59,9 @@ pnpm tauri build --bundles dmg
 
 The bundled app and installer show the original KimiSwitch icon and the attribution `Powered by kyuiazusa`. The icon uses a white sideways-pi switch mark with a small green status element; it is not a Kimi or CC Switch product mark.
 
-The GitHub Actions workflow in `.github/workflows/build-installers.yml` builds a macOS DMG and a Windows NSIS setup EXE on version tags such as `v0.1.0`, or when started manually from the Actions page. Each installer is uploaded as a workflow artifact. The generated builds are unsigned until Apple and Windows signing credentials are configured.
+The GitHub Actions workflow in `.github/workflows/build-installers.yml` builds signed Tauri updater artifacts for macOS Apple Silicon, macOS Intel, and Windows x86_64 on version tags such as `v0.2.0`. It publishes the platform files and a validated `latest.json` only after every build succeeds. Updater signatures are separate from Apple Developer ID/notarization and Windows Authenticode installer signing.
+
+Version `0.2.0` is the first updater-enabled release. Existing `0.1.x` users must install it manually once; later releases can be checked, downloaded, installed, and restarted from the settings page.
 
 For system credential storage:
 
