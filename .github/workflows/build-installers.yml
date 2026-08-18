@@ -20,12 +20,12 @@ jobs:
           - name: macOS Apple Silicon
             runner: macos-14
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             artifact: kimiswitch-macos-aarch64
           - name: macOS Intel
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: app,dmg
             artifact: kimiswitch-macos-x86_64
           - name: Windows x86_64
             runner: windows-latest
@@ -38,6 +38,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Verify tag matches application version
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           version=$(node -p "require('./package.json').version")
