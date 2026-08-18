@@ -209,12 +209,50 @@ func TestSetActiveImmediatelyChangesStickyKey(t *testing.T) {
 	if err := manager.SetActive("b"); err != nil {
 		t.Fatal(err)
 	}
+	manager.MarkCooldown("b", "rate limited")
+	if err := manager.SetActive("b"); err != nil {
+		t.Fatal(err)
+	}
 	selected, err := manager.Select(0, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if selected.Key.Name != "b" {
 		t.Fatalf("selected %q, want b", selected.Key.Name)
+	}
+	_, state := manager.Snapshot()
+	if !state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError != "" || state.Keys["b"].LastCheckStatus != "" {
+		t.Fatalf("manual switch should clear cooldown state: %+v", state.Keys["b"])
+	}
+}
+
+func TestEnableKeyMakesItStickyImmediately(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}, {Name: "b", Enabled: false, APIKey: "b"}}
+	c.ActiveKey = "a"
+	c.Rotation.Enabled = true
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("b", "manual re-enable")
+	if err := manager.SetKeyEnabled("b", true); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.Select(0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Key.Name != "b" {
+		t.Fatalf("selected %q, want b", selected.Key.Name)
+	}
+	_, state := manager.Snapshot()
+	if got := manager.Config().ActiveKey; got != "b" {
+		t.Fatalf("active key = %q, want b", got)
+	}
+	if !state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError != "" || state.Keys["b"].LastCheckStatus != "" {
+		t.Fatalf("enabled key should clear cooldown state: %+v", state.Keys["b"])
 	}
 }
 
@@ -250,6 +288,30 @@ func TestEnsureMigratesLegacyRotationModesToSticky(t *testing.T) {
 	}
 	if !strings.Contains(string(saved), `"mode": "sticky"`) {
 		t.Fatalf("saved config did not migrate mode: %s", saved)
+	}
+}
+
+func TestStickyFailoverReturnsPersistError(t *testing.T) {
+	temp := t.TempDir()
+	readonly := filepath.Join(temp, "readonly")
+	if err := os.Mkdir(readonly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(readonly, "config.json")
+	c := config.Default()
+	c.Keys = []config.KeyConfig{
+		{Name: "a", Enabled: true, APIKey: "a"},
+		{Name: "b", Enabled: true, APIKey: "b"},
+	}
+	c.ActiveKey = "a"
+	c.Rotation.Enabled = true
+	manager, err := NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("a", "failed")
+	if _, err := manager.Select(0, 1); err == nil {
+		t.Fatal("expected persist error when failover cannot save active key")
 	}
 }
 

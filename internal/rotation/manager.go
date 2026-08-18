@@ -126,7 +126,7 @@ func (m *Manager) SetActive(name string) error {
 	if !m.hasKeyLocked(name) {
 		return fmt.Errorf("unknown key %q", name)
 	}
-	m.cfg.ActiveKey = name
+	m.preferKeyLocked(name)
 	return m.persistLocked()
 }
 
@@ -233,6 +233,9 @@ func (m *Manager) SetKeyEnabled(name string, enabled bool) error {
 	for i := range m.cfg.Keys {
 		if m.cfg.Keys[i].Name == name {
 			m.cfg.Keys[i].Enabled = enabled
+			if enabled {
+				m.preferKeyLocked(name)
+			}
 			return m.persistLocked()
 		}
 	}
@@ -295,7 +298,11 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 	}
 	name := ""
 	if m.cfg.Rotation.Enabled {
-		name = m.selectStickyLocked(false)
+		var err error
+		name, err = m.selectStickyLocked(false)
+		if err != nil {
+			return Selected{}, err
+		}
 	} else if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && !m.cooldownLocked(key.Name) {
 		name = key.Name
 	} else {
@@ -305,7 +312,11 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 	// unavailable. This keeps traffic moving without permanently deadlocking.
 	if name == "" {
 		if m.cfg.Rotation.Enabled {
-			name = m.selectStickyLocked(true)
+			var err error
+			name, err = m.selectStickyLocked(true)
+			if err != nil {
+				return Selected{}, err
+			}
 		} else {
 			name = m.selectFirstEnabledLocked()
 		}
@@ -469,21 +480,23 @@ func (m *Manager) Snapshot() (config.Config, State) {
 	return m.cfg, cloneState(m.state)
 }
 
-func (m *Manager) selectStickyLocked(allowCooldown bool) string {
+func (m *Manager) selectStickyLocked(allowCooldown bool) (string, error) {
 	if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && (allowCooldown || !m.cooldownLocked(key.Name)) {
-		return key.Name
+		return key.Name, nil
 	}
 	for _, key := range m.cfg.Keys {
 		if !key.Enabled || (!allowCooldown && m.cooldownLocked(key.Name)) {
 			continue
 		}
 		if key.Name != m.cfg.ActiveKey {
-			m.cfg.ActiveKey = key.Name
-			_ = config.Save(m.configPath, m.cfg)
+			m.preferKeyLocked(key.Name)
+			if err := config.Save(m.configPath, m.cfg); err != nil {
+				return "", err
+			}
 		}
-		return key.Name
+		return key.Name, nil
 	}
-	return ""
+	return "", nil
 }
 
 func (m *Manager) selectFirstHealthyLocked() string {
@@ -502,6 +515,15 @@ func (m *Manager) selectFirstEnabledLocked() string {
 		}
 	}
 	return ""
+}
+
+func (m *Manager) preferKeyLocked(name string) {
+	m.cfg.ActiveKey = name
+	stats := m.state.Keys[name]
+	stats.CooldownUntil = time.Time{}
+	stats.LastError = ""
+	stats.LastCheckStatus = ""
+	m.state.Keys[name] = stats
 }
 
 func (m *Manager) cooldownLocked(name string) bool {
