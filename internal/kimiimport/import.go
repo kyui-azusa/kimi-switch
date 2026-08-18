@@ -7,7 +7,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+type Provider struct {
+	APIKey             string
+	QuotaCycleAnchorAt time.Time
+	QuotaCycleSeconds  int64
+}
 
 func DefaultPath() string {
 	home, err := os.UserHomeDir()
@@ -19,11 +26,23 @@ func DefaultPath() string {
 
 // Parse extracts only API-key providers. OAuth state stays owned by Kimi Code.
 func Parse(path string) (map[string]string, error) {
+	providers, err := ParseProviders(path)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(providers))
+	for name, provider := range providers {
+		result[name] = provider.APIKey
+	}
+	return result, nil
+}
+
+func ParseProviders(path string) (map[string]Provider, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read Kimi config %s: %w", path, err)
 	}
-	providers := map[string]string{}
+	providers := map[string]Provider{}
 	sectionProvider := ""
 	sectionEnv := false
 	for _, rawLine := range strings.Split(string(b), "\n") {
@@ -44,16 +63,50 @@ func Parse(path string) (map[string]string, error) {
 			continue
 		}
 		name := strings.TrimSpace(parts[0])
-		if (sectionEnv && name != "KIMI_API_KEY") || (!sectionEnv && name != "api_key") {
+		valueText := strings.TrimSpace(parts[1])
+		if sectionEnv && name == "KIMI_API_KEY" {
+			value, err := parseString(valueText)
+			if err != nil {
+				return nil, fmt.Errorf("parse provider %q: %w", sectionProvider, err)
+			}
+			if value != "" {
+				provider := providers[sectionProvider]
+				provider.APIKey = value
+				providers[sectionProvider] = provider
+			}
 			continue
 		}
-		value, err := parseString(strings.TrimSpace(parts[1]))
-		if err != nil {
-			return nil, fmt.Errorf("parse provider %q: %w", sectionProvider, err)
+		if !sectionEnv && name == "api_key" {
+			value, err := parseString(valueText)
+			if err != nil {
+				return nil, fmt.Errorf("parse provider %q: %w", sectionProvider, err)
+			}
+			if value != "" {
+				provider := providers[sectionProvider]
+				provider.APIKey = value
+				providers[sectionProvider] = provider
+			}
+			continue
 		}
-		if value != "" {
-			providers[sectionProvider] = value
+		if sectionEnv {
+			continue
 		}
+		provider := providers[sectionProvider]
+		switch strings.ToLower(name) {
+		case "quota_cycle_seconds", "cycle_seconds", "quota_period_seconds":
+			seconds, parseErr := strconv.ParseInt(strings.Trim(valueText, "\"' "), 10, 64)
+			if parseErr == nil {
+				provider.QuotaCycleSeconds = seconds
+			}
+		case "quota_cycle_anchor_at", "quota_reset_at", "reset_at", "next_refresh_at":
+			value, parseErr := parseString(valueText)
+			if parseErr == nil {
+				if parsed, timeErr := time.Parse(time.RFC3339, value); timeErr == nil {
+					provider.QuotaCycleAnchorAt = parsed.UTC()
+				}
+			}
+		}
+		providers[sectionProvider] = provider
 	}
 	return providers, nil
 }

@@ -291,6 +291,84 @@ func TestClassifyProviderFailureDistinguishesQuotaAndOverload(t *testing.T) {
 	}
 }
 
+func TestQuotaObservationUsesProviderResetAndCycleHeaders(t *testing.T) {
+	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	headers := http.Header{}
+	headers.Set("X-Quota-Reset", "2026-03-08T00:00:00Z")
+	headers.Set("X-Quota-Cycle-Seconds", "604800")
+	observation := quotaObservation(headers, nil, now, true)
+	if observation.Source != "provider" || observation.Confidence != "high" || observation.CycleSeconds != 604800 || !observation.AnchorAt.Equal(time.Date(2026, 3, 8, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected provider observation: %+v", observation)
+	}
+}
+
+func TestQuotaObservationRetryAfterIsOnlyObserved(t *testing.T) {
+	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	headers := http.Header{}
+	headers.Set("Retry-After", "3600")
+	observation := quotaObservation(headers, nil, now, true)
+	if observation.Source != "observed" || observation.Confidence != "medium" || observation.CycleSeconds != 0 || !observation.AnchorAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("unexpected retry observation: %+v", observation)
+	}
+}
+
+func TestQuotaCalibrationEndpointPersistsManualSource(t *testing.T) {
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "key"}}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/keys/work/quota", strings.NewReader(`{"anchor_at":"2026-01-01T00:00:00Z","cycle_seconds":604800}`))
+	request.Header.Set("Authorization", "Bearer local")
+	response := httptest.NewRecorder()
+	NewServer(manager).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	stats := manager.State().Keys["work"]
+	if stats.RefreshSource != "manual" || stats.RefreshConfidence != "high" || stats.QuotaCycleSeconds != 604800 || stats.NextRefreshAt.IsZero() {
+		t.Fatalf("manual quota state = %+v", stats)
+	}
+}
+
+func TestProxyResponseMetadataUpdatesQuotaWithoutRequestUsageReset(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Quota-Reset", "2026-04-08T00:00:00Z")
+		w.Header().Set("X-Quota-Cycle-Seconds", "604800")
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer upstream.Close()
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "key"}}
+	c.ActiveKey = "work"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewServer(manager))
+	defer server.Close()
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"kimi-for-coding","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	stats := manager.State().Keys["work"]
+	if stats.RefreshSource != "provider" || stats.QuotaCycleSeconds != 604800 || stats.Requests != 1 {
+		t.Fatalf("response quota state = %+v", stats)
+	}
+}
+
 func TestDeleteActiveKeyPersistsToIsolatedConfigAndSelectsNext(t *testing.T) {
 	temp := t.TempDir()
 	configPath := filepath.Join(temp, "config.json")

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kyui-azusa/kimi-switch/internal/config"
@@ -26,12 +27,52 @@ const maxResponseBytes = 64 << 20
 type Server struct {
 	manager *rotation.Manager
 	client  *http.Client
+	probeMu sync.Mutex
+	probes  map[string]bool
 }
 
 func NewServer(manager *rotation.Manager) *Server {
 	return &Server{
 		manager: manager,
 		client:  &http.Client{Timeout: 0}, // streaming requests must not have a fixed timeout
+		probes:  map[string]bool{},
+	}
+}
+
+// StartQuotaRefreshProbes runs lightweight, independent probes when a trusted
+// quota boundary is reached. It never directly makes an account routable.
+func (s *Server) StartQuotaRefreshProbes(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				s.triggerQuotaProbes(now)
+			}
+		}
+	}()
+}
+
+func (s *Server) triggerQuotaProbes(now time.Time) {
+	for _, name := range s.manager.ClaimDueQuotaProbes(now) {
+		s.probeMu.Lock()
+		if s.probes[name] {
+			s.probeMu.Unlock()
+			continue
+		}
+		s.probes[name] = true
+		s.probeMu.Unlock()
+		go func(keyName string) {
+			defer func() {
+				s.probeMu.Lock()
+				delete(s.probes, keyName)
+				s.probeMu.Unlock()
+			}()
+			_ = s.testConnectivity(context.Background(), keyName)
+		}(name)
 	}
 }
 
@@ -55,6 +96,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid local proxy key"})
 		return
 	}
+	// Desktop polling and normal proxy traffic can both notice a due boundary;
+	// probes run asynchronously and never become the user's request.
+	s.triggerQuotaProbes(time.Now().UTC())
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		s.handleAdmin(w, r)
 		return
@@ -168,6 +212,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		}
 		result := s.testConnectivity(r.Context(), name)
 		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/keys/") && strings.HasSuffix(r.URL.Path, "/quota"):
+		s.handleQuotaCalibration(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/keys/"):
 		name, action, err := parseKeyPath(r.URL.Path)
 		if err != nil || action != "" {
@@ -312,8 +358,47 @@ func (s *Server) testConnectivity(parent context.Context, name string) Connectiv
 	} else {
 		result.Status, result.Message = classifyProviderFailure(response.StatusCode, body)
 	}
+	s.observeQuota(name, response.Header, body, result.Status == "quota_exhausted")
 	_ = s.manager.RecordConnectivity(name, result.Status, latency, result.Message)
 	return result
+}
+
+func (s *Server) handleQuotaCalibration(w http.ResponseWriter, r *http.Request) {
+	name, action, err := parseKeyPath(r.URL.Path)
+	if err != nil || action != "quota" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid key path"})
+		return
+	}
+	var input struct {
+		AnchorAt     string `json:"anchor_at"`
+		CycleSeconds int64  `json:"cycle_seconds"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	anchor, err := time.Parse(time.RFC3339, strings.TrimSpace(input.AnchorAt))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "anchor_at must be RFC3339"})
+		return
+	}
+	if err := s.manager.CalibrateQuota(name, anchor, input.CycleSeconds); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) observeQuota(name string, headers http.Header, body []byte, quotaResponse bool) {
+	observation := quotaObservation(headers, body, time.Now().UTC(), quotaResponse)
+	if observation.AnchorAt.IsZero() && observation.CycleSeconds <= 0 {
+		// Still record the observation timestamp when the response contained a
+		// quota signal; the manager keeps the refresh state unknown otherwise.
+		if !quotaResponse {
+			return
+		}
+	}
+	_ = s.manager.RecordQuotaObservation(name, observation)
 }
 
 func classifyProviderFailure(httpStatus int, body []byte) (string, string) {
@@ -454,15 +539,18 @@ func (s *Server) handleKimiImport(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(input.Path) == "" {
 		input.Path = kimiimport.DefaultPath()
 	}
-	providers, err := kimiimport.Parse(input.Path)
+	providers, err := kimiimport.ParseProviders(input.Path)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	imported := []string{}
-	for name, apiKey := range providers {
+	for name, provider := range providers {
+		if provider.APIKey == "" {
+			continue
+		}
 		service := "kimi-switch/" + name
-		if err := secret.Write(service, apiKey); err != nil {
+		if err := secret.Write(service, provider.APIKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -478,6 +566,14 @@ func (s *Server) handleKimiImport(w http.ResponseWriter, r *http.Request) {
 		if err := s.manager.UpsertKey(original, key); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		observedAt := time.Now().UTC()
+		_ = s.manager.RecordImported(name, observedAt)
+		if !provider.QuotaCycleAnchorAt.IsZero() || provider.QuotaCycleSeconds > 0 {
+			_ = s.manager.RecordQuotaObservation(name, rotation.QuotaObservation{
+				ObservedAt: observedAt, AnchorAt: provider.QuotaCycleAnchorAt,
+				CycleSeconds: provider.QuotaCycleSeconds, Source: rotation.QuotaSourceProvider, Confidence: "high",
+			})
 		}
 		imported = append(imported, name)
 	}
@@ -561,19 +657,26 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 			lastBody, _ = io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
 			response.Body.Close()
 			usage := parseUsage(lastBody)
-			s.manager.Finish(selected, response.StatusCode, usage, nil)
 			accountStatus, accountMessage := classifyProviderFailure(response.StatusCode, lastBody)
+			s.observeQuota(selected.Key.Name, response.Header, lastBody, accountStatus == "quota_exhausted")
+			s.manager.Finish(selected, response.StatusCode, usage, nil)
 			s.manager.SetAccountStatus(selected.Key.Name, accountStatus, accountMessage)
 			continue
 		}
 
 		if stream && response.StatusCode < 400 {
+			s.observeQuota(selected.Key.Name, response.Header, nil, false)
 			s.streamResponse(w, response, selected)
 			return
 		}
 		lastBody, err = io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
 		response.Body.Close()
 		usage := parseUsage(lastBody)
+		accountStatus := ""
+		if response.StatusCode >= 400 {
+			accountStatus, _ = classifyProviderFailure(response.StatusCode, lastBody)
+		}
+		s.observeQuota(selected.Key.Name, response.Header, lastBody, accountStatus == "quota_exhausted")
 		s.manager.Finish(selected, response.StatusCode, usage, nil)
 		if response.StatusCode >= 400 {
 			accountStatus, accountMessage := classifyProviderFailure(response.StatusCode, lastBody)

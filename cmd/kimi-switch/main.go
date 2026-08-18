@@ -94,11 +94,15 @@ func serve(path string) error {
 	}
 	server := &http.Server{
 		Addr:              c.ListenAddr,
-		Handler:           proxy.NewServer(manager),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	probeCtx, cancelProbes := context.WithCancel(context.Background())
+	defer cancelProbes()
+	proxyServer := proxy.NewServer(manager)
+	proxyServer.StartQuotaRefreshProbes(probeCtx)
+	server.Handler = proxyServer
 	go func() {
 		<-stop
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -214,40 +218,50 @@ func importKimi(args []string) error {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	providers, err := kimiimport.Parse(path)
+	providers, err := kimiimport.ParseProviders(path)
 	if err != nil {
 		return err
 	}
 	if len(providers) == 0 {
 		return fmt.Errorf("no API-key provider found in %s", path)
 	}
-	c, err := config.Load(config.Path())
+	manager, err := loadManager(config.Path())
 	if err != nil {
 		return err
 	}
-	for name, apiKey := range providers {
+	for name, provider := range providers {
+		if provider.APIKey == "" {
+			continue
+		}
 		service := "kimi-switch/" + name
-		if err := secret.Write(service, apiKey); err != nil {
+		if err := secret.Write(service, provider.APIKey); err != nil {
 			return fmt.Errorf("store provider %q in Keychain: %w", name, err)
 		}
 		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, Enabled: true}
-		replaced := false
-		for i := range c.Keys {
-			if c.Keys[i].Name == name {
-				c.Keys[i] = key
-				replaced = true
+		for _, existing := range manager.Config().Keys {
+			if existing.Name == name {
+				key.CreatedAt = existing.CreatedAt
 				break
 			}
 		}
-		if !replaced {
-			c.Keys = append(c.Keys, key)
+		if err := manager.UpsertKey(name, key); err != nil {
+			return err
 		}
-		if c.ActiveKey == "" {
-			c.ActiveKey = name
+		observedAt := time.Now().UTC()
+		if err := manager.RecordImported(name, observedAt); err != nil {
+			return err
+		}
+		if !provider.QuotaCycleAnchorAt.IsZero() || provider.QuotaCycleSeconds > 0 {
+			if err := manager.RecordQuotaObservation(name, rotation.QuotaObservation{
+				ObservedAt: observedAt, AnchorAt: provider.QuotaCycleAnchorAt,
+				CycleSeconds: provider.QuotaCycleSeconds, Source: rotation.QuotaSourceProvider, Confidence: "high",
+			}); err != nil {
+				return err
+			}
 		}
 		fmt.Println("imported:", name, "-> Keychain", service)
 	}
-	return config.Save(config.Path(), c)
+	return nil
 }
 
 func showStatus(path string) error {

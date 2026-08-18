@@ -204,3 +204,86 @@ func TestFinishRecordsCCSStyleTokenBreakdownAndDailyUsage(t *testing.T) {
 		t.Fatalf("unexpected daily stats: %+v", date)
 	}
 }
+
+func TestNextCycleBoundaryUsesNearestUTCBoundaryAcrossCycles(t *testing.T) {
+	anchor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.FixedZone("PST", -8*60*60))
+	got := NextCycleBoundary(anchor, 7*24*60*60, now)
+	want := time.Date(2026, 1, 14, 16, 0, 0, 0, time.UTC)
+	if !got.Equal(want) || got.Location() != time.UTC {
+		t.Fatalf("next boundary = %v, want %v UTC", got, want)
+	}
+}
+
+func TestQuotaImportWithoutAnchorRemainsUnknown(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "key"}}
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Date(2026, 2, 1, 1, 2, 3, 0, time.UTC)
+	if err := manager.RecordImported("work", observed); err != nil {
+		t.Fatal(err)
+	}
+	stats := manager.State().Keys["work"]
+	if !stats.NextRefreshAt.IsZero() || stats.RefreshSource != "unknown" || !stats.LastQuotaObservedAt.Equal(observed) {
+		t.Fatalf("unexpected imported quota state: %+v", stats)
+	}
+}
+
+func TestQuotaCalibrationPersistsAndRequestFinishDoesNotMoveAnchor(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "key"}}
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := manager.CalibrateQuota("work", anchor, 24*60*60); err != nil {
+		t.Fatal(err)
+	}
+	before := manager.State().Keys["work"]
+	selected, err := manager.Select(10, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Finish(selected, 200, Usage{}, nil)
+	after := manager.State().Keys["work"]
+	if !after.QuotaCycleAnchorAt.Equal(before.QuotaCycleAnchorAt) || after.QuotaCycleSeconds != before.QuotaCycleSeconds || !after.NextRefreshAt.Equal(before.NextRefreshAt) {
+		t.Fatalf("request changed quota anchor: before=%+v after=%+v", before, after)
+	}
+	if after.RefreshSource != "manual" || after.RefreshConfidence != "high" {
+		t.Fatalf("manual source not persisted: %+v", after)
+	}
+}
+
+func TestDueQuotaProbeAdvancesBoundaryWithoutRestoringAccount(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "key"}}
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.Now().UTC().Add(-2 * time.Hour)
+	if err := manager.RecordQuotaObservation("work", QuotaObservation{ObservedAt: time.Now(), AnchorAt: anchor, CycleSeconds: 3600, Source: QuotaSourceProvider, Confidence: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.SetAccountStatus("work", "quota_exhausted", "limit")
+	old := manager.State().Keys["work"]
+	probeNow := time.Now().UTC().Add(2 * time.Hour)
+	due := manager.ClaimDueQuotaProbes(probeNow)
+	if len(due) != 1 || due[0] != "work" {
+		t.Fatalf("due probes = %v", due)
+	}
+	newStats := manager.State().Keys["work"]
+	if !newStats.NextRefreshAt.After(time.Now().UTC()) || newStats.LastCheckStatus != old.LastCheckStatus || newStats.CooldownUntil.IsZero() {
+		t.Fatalf("probe claim changed health unexpectedly: before=%+v after=%+v", old, newStats)
+	}
+	if got := manager.ClaimDueQuotaProbes(probeNow); len(got) != 0 {
+		t.Fatalf("duplicate due probe = %v", got)
+	}
+}

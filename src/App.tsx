@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Check,
   Copy,
+  CalendarClock,
   Download,
   Edit3,
   GripVertical,
@@ -28,12 +29,13 @@ import { cn } from "@/lib/utils";
 
 type Panel =
   | { kind: "form"; key?: KeyConfig }
+  | { kind: "calibrate"; key: KeyConfig; stats: KeyStats }
   | { kind: "settings" }
   | { kind: "import" }
   | { kind: "usage" }
   | null;
 
-type AccountAction = "use" | "test" | "edit" | "duplicate" | "toggle" | "delete";
+type AccountAction = "use" | "test" | "edit" | "calibrate" | "duplicate" | "toggle" | "delete";
 
 const emptyStats: KeyStats = {
   requests: 0,
@@ -62,7 +64,11 @@ function sourceLabel(key: KeyConfig) {
 function statusOf(key: KeyConfig, stats: KeyStats) {
   if (!key.enabled) return { label: "未参与轮换", color: "bg-gray-400", text: "text-gray-500" };
   const cooldownMinutes = stats.cooldown_until ? Math.max(1, Math.ceil((new Date(stats.cooldown_until).getTime() - Date.now()) / 60000)) : 0;
-  if (stats.last_check_status === "quota_exhausted") return { label: "额度用尽", color: "bg-red-500", text: "text-red-600" };
+  if (stats.last_check_status === "quota_exhausted") {
+    const next = stats.next_refresh_at ? new Date(stats.next_refresh_at) : null;
+    const due = Boolean(next && next.getUTCFullYear() > 1 && next.getTime() <= Date.now());
+    return { label: due ? "待复测" : "额度用尽", color: due ? "bg-amber-500" : "bg-red-500", text: due ? "text-amber-600" : "text-red-600" };
+  }
   if (stats.last_check_status === "invalid_key") return { label: "Key 无效", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "account_disabled") return { label: "账号异常", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "forbidden") return { label: "权限不足", color: "bg-red-500", text: "text-red-600" };
@@ -75,6 +81,42 @@ function statusOf(key: KeyConfig, stats: KeyStats) {
   if (stats.last_error) return { label: "最近失败", color: "bg-red-500", text: "text-red-500" };
   if (stats.last_check_status === "ok") return { label: `连通 · ${stats.last_check_ms || 0} ms`, color: "bg-emerald-500", text: "text-emerald-600" };
   return { label: "可用", color: "bg-emerald-500", text: "text-emerald-600" };
+}
+
+function refreshSourceLabel(stats: KeyStats) {
+  if (stats.refresh_source === "provider") return "自动获取 · 官方元数据";
+  if (stats.refresh_source === "manual") return "人工校准";
+  if (stats.refresh_source === "observed") return "自动观察 · 估算";
+  return "尚未知晓";
+}
+
+function formatRefreshDate(value?: string) {
+  if (!value) return "未知";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1 ? "未知" : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+}
+
+function formatCountdown(value?: string) {
+  if (!value) return "未知";
+  const remaining = new Date(value).getTime() - Date.now();
+  const date = new Date(value);
+  if (!Number.isFinite(remaining) || date.getUTCFullYear() <= 1) return "未知";
+  if (remaining <= 0) return "待复测";
+  const seconds = Math.ceil(remaining / 1000);
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days) return `${days}天 ${hours}小时后`;
+  if (hours) return `${hours}小时 ${minutes}分钟后`;
+  return `${Math.max(1, minutes)}分钟后`;
+}
+
+function dateTimeLocalValue(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -186,6 +228,43 @@ function AccountForm({ current, onBack, onSaved, notify }: {
             <Switch checked={form.enabled} onCheckedChange={(value) => update("enabled", value)} />
           </div>
         </div>
+      </section>
+    </FullScreenPanel>
+  );
+}
+
+function QuotaCalibrationPanel({ current, stats, onBack, onSaved, notify }: {
+  current: KeyConfig;
+  stats: KeyStats;
+  onBack: () => void;
+  onSaved: () => Promise<void>;
+  notify: (message: string, error?: boolean) => void;
+}) {
+  const [anchor, setAnchor] = useState(dateTimeLocalValue(stats.quota_cycle_anchor_at || stats.next_refresh_at));
+  const [cycleHours, setCycleHours] = useState(stats.quota_cycle_seconds ? String(Math.round(stats.quota_cycle_seconds / 3600)) : "");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (!anchor || !cycleHours || Number(cycleHours) <= 0) return notify("请填写刷新锚点和周期", true);
+    setSaving(true);
+    try {
+      const parsed = new Date(anchor);
+      await api.calibrateQuota(current.name, { anchor_at: parsed.toISOString(), cycle_seconds: Math.round(Number(cycleHours) * 3600) });
+      await onSaved();
+      notify("额度周期已重新校准");
+      onBack();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "校准失败", true);
+    } finally { setSaving(false); }
+  };
+  return (
+    <FullScreenPanel title="校准额度周期" subtitle={`${current.name} · 保存后按 UTC 推算下一次刷新`} onBack={onBack} footer={<><Button variant="outline" onClick={onBack}>取消</Button><Button onClick={save} disabled={saving}><CalendarClock className="h-4 w-4" />{saving ? "保存中…" : "保存校准"}</Button></>}>
+      <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
+        <div className="flex items-start gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600"><CalendarClock className="h-5 w-5" /></div><div><h2 className="font-semibold">刷新边界</h2><p className="mt-1 text-sm text-muted-foreground">锚点必须是一个真实周期边界；普通请求不会改变它。</p></div></div>
+        <div className="mt-6 grid gap-5 sm:grid-cols-2">
+          <Field label="周期锚点（本地时间输入）"><input className={fieldClass} type="datetime-local" value={anchor} onChange={(e) => setAnchor(e.target.value)} /></Field>
+          <Field label="周期（小时）" hint="例如 168 表示 7 天；系统会按 UTC 计算边界。"><input className={fieldClass} type="number" min={1} step={1} value={cycleHours} onChange={(e) => setCycleHours(e.target.value)} placeholder="168" /></Field>
+        </div>
+        <div className="mt-5 rounded-lg border border-border bg-muted/30 p-4 text-sm leading-6 text-muted-foreground"><div>当前来源：{refreshSourceLabel(stats)} · 可信度：{stats.refresh_confidence || "未知"}</div><div>最近观测：{stats.last_quota_observed_at ? formatRefreshDate(stats.last_quota_observed_at) : "未知"}</div></div>
       </section>
     </FullScreenPanel>
   );
@@ -381,6 +460,12 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
             <div className="flex items-center gap-2"><h3 className="truncate text-base font-semibold">{item.name}</h3>{active && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前</span>}{rotationEnabled && item.enabled && <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">轮换池</span>}</div>
             <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className={cn("h-1.5 w-1.5 flex-shrink-0 rounded-full", state.color)} /><span className={state.text}>{state.label}</span><span>·</span><span className="truncate">{item.account || sourceLabel(item)}</span></div>
             {(item.notes || stats.last_error) && <p className={cn("mt-1 max-w-lg truncate text-xs", stats.last_error ? "text-red-500/85" : "text-muted-foreground")} title={stats.last_error || item.notes}>{stats.last_error || item.notes}</p>}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+              <span className="inline-flex items-center gap-1"><CalendarClock className="h-3 w-3" />预计刷新：{formatRefreshDate(stats.next_refresh_at)}</span>
+              <span>倒计时：{formatCountdown(stats.next_refresh_at)}</span>
+              <span>来源：{refreshSourceLabel(stats)}</span>
+              {stats.last_quota_observed_at && <span>最近观测：{formatRefreshDate(stats.last_quota_observed_at)}</span>}
+            </div>
           </div>
         </div>
         <div className="hidden flex-shrink-0 items-center gap-5 lg:flex">
@@ -391,6 +476,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
         <div className="flex flex-shrink-0 items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
           <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
           <Button size="icon" variant="ghost" title="真实可用性测试（发送最多 1 个输出 Token）" disabled={testing} onClick={() => onAction("test", item)}><RadioTower className={cn("h-4 w-4", testing && "animate-pulse text-blue-500")} /></Button>
+          <Button size="icon" variant="ghost" title="重新校准额度周期" onClick={() => onAction("calibrate", item)}><CalendarClock className="h-4 w-4" /></Button>
           <Button size="icon" variant="ghost" title="编辑" onClick={() => onAction("edit", item)}><Edit3 className="h-4 w-4" /></Button>
           <Button size="icon" variant="ghost" title="复制" onClick={() => onAction("duplicate", item)}><Copy className="h-4 w-4" /></Button>
           <Button size="icon" variant="ghost" title={item.enabled ? "移出轮换池" : "加入轮换池"} onClick={() => onAction("toggle", item)}><ShieldCheck className={cn("h-4 w-4", item.enabled && "text-emerald-500")} /></Button>
@@ -474,6 +560,7 @@ export default function App() {
 
   const action = async (kind: AccountAction, item: KeyConfig) => {
     if (kind === "edit") return setPanel({ kind: "form", key: item });
+    if (kind === "calibrate") return setPanel({ kind: "calibrate", key: item, stats: status?.keys[item.name] || emptyStats });
     if (kind === "delete") {
       setDeleteTarget(item);
       return;
@@ -587,6 +674,7 @@ export default function App() {
       </main>
 
       {panel?.kind === "form" && <AccountForm current={panel.key} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} />}
+      {panel?.kind === "calibrate" && <QuotaCalibrationPanel current={panel.key} stats={panel.stats} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} />}
       {panel?.kind === "settings" && <SettingsPanel status={status} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} />}
       {panel?.kind === "import" && <ImportPanel onBack={() => setPanel(null)} onImported={() => refresh(true)} notify={notify} />}
       {panel?.kind === "usage" && <UsagePanel status={status} onBack={() => setPanel(null)} />}

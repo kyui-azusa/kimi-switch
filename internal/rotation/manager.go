@@ -32,6 +32,15 @@ type Stats struct {
 	LastCheckAt     time.Time `json:"last_check_at,omitempty"`
 	LastCheckStatus string    `json:"last_check_status,omitempty"`
 	LastCheckMS     int64     `json:"last_check_ms,omitempty"`
+	// Quota fields are deliberately independent from request usage and cooldown.
+	// A missing anchor or cycle means that the next refresh is unknown.
+	QuotaCycleAnchorAt  time.Time `json:"quota_cycle_anchor_at,omitempty"`
+	QuotaCycleSeconds   int64     `json:"quota_cycle_seconds,omitempty"`
+	NextRefreshAt       time.Time `json:"next_refresh_at,omitempty"`
+	RefreshSource       string    `json:"refresh_source,omitempty"`
+	RefreshConfidence   string    `json:"refresh_confidence,omitempty"`
+	LastQuotaObservedAt time.Time `json:"last_quota_observed_at,omitempty"`
+	ImportedAt          time.Time `json:"imported_at,omitempty"`
 }
 
 type State struct {
@@ -65,6 +74,21 @@ type Usage struct {
 	ReasoningTokens int64
 	Known           bool
 }
+
+type QuotaObservation struct {
+	ObservedAt   time.Time
+	AnchorAt     time.Time
+	CycleSeconds int64
+	Source       string
+	Confidence   string
+}
+
+const (
+	QuotaSourceUnknown  = "unknown"
+	QuotaSourceProvider = "provider"
+	QuotaSourceObserved = "observed"
+	QuotaSourceManual   = "manual"
+)
 
 type Manager struct {
 	mu         sync.Mutex
@@ -100,7 +124,13 @@ func NewManager(c config.Config, configPath, statePath string) (*Manager, error)
 	if strings.TrimSpace(configPath) == "" {
 		return nil, errors.New("config path is required")
 	}
-	return &Manager{cfg: c, state: s, configPath: configPath, statePath: statePath}, nil
+	m := &Manager{cfg: c, state: s, configPath: configPath, statePath: statePath}
+	if m.normalizeQuotaLocked(time.Now().UTC()) {
+		if err := m.persistStateLocked(); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
 }
 
 func (m *Manager) Config() config.Config {
@@ -414,6 +444,168 @@ func (m *Manager) RecordConnectivity(name, status string, latency time.Duration,
 	return m.persistStateLocked()
 }
 
+// RecordImported records that an account was observed during import. It never
+// turns the import time into a quota anchor.
+func (m *Manager) RecordImported(name string, observedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.hasKeyLocked(name) {
+		return fmt.Errorf("unknown key %q", name)
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	observedAt = observedAt.UTC()
+	stats := m.state.Keys[name]
+	stats.ImportedAt = observedAt
+	if observedAt.After(stats.LastQuotaObservedAt) {
+		stats.LastQuotaObservedAt = observedAt
+	}
+	if stats.QuotaCycleAnchorAt.IsZero() || stats.QuotaCycleSeconds <= 0 {
+		stats.RefreshSource = QuotaSourceUnknown
+		stats.RefreshConfidence = "unknown"
+		stats.NextRefreshAt = time.Time{}
+	}
+	m.state.Keys[name] = stats
+	return m.persistStateLocked()
+}
+
+// RecordQuotaObservation stores provider/reset observations without changing
+// request usage or cooldown. An anchor is only reliable when a cycle is also
+// known, either in the observation or from an existing reliable record.
+func (m *Manager) RecordQuotaObservation(name string, observation QuotaObservation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.hasKeyLocked(name) {
+		return fmt.Errorf("unknown key %q", name)
+	}
+	if observation.ObservedAt.IsZero() {
+		observation.ObservedAt = time.Now().UTC()
+	}
+	observation.ObservedAt = observation.ObservedAt.UTC()
+	stats := m.state.Keys[name]
+	if observation.ObservedAt.After(stats.LastQuotaObservedAt) {
+		stats.LastQuotaObservedAt = observation.ObservedAt
+	}
+	source, confidence := normalizeQuotaSource(observation.Source, observation.Confidence)
+	anchor := observation.AnchorAt.UTC()
+	cycle := observation.CycleSeconds
+	if cycle <= 0 {
+		cycle = stats.QuotaCycleSeconds
+	}
+	if anchor.IsZero() {
+		anchor = stats.QuotaCycleAnchorAt
+	}
+	if anchor.IsZero() || cycle <= 0 {
+		m.state.Keys[name] = stats
+		return m.persistStateLocked()
+	}
+	if cycle < 60 || cycle > 10*365*24*60*60 {
+		m.state.Keys[name] = stats
+		return m.persistStateLocked()
+	}
+	if quotaSourceRank(source) < quotaSourceRank(stats.RefreshSource) && !stats.QuotaCycleAnchorAt.IsZero() {
+		m.state.Keys[name] = stats
+		return m.persistStateLocked()
+	}
+	stats.QuotaCycleAnchorAt = anchor
+	stats.QuotaCycleSeconds = cycle
+	stats.NextRefreshAt = NextCycleBoundary(anchor, cycle, time.Now().UTC())
+	stats.RefreshSource = source
+	stats.RefreshConfidence = confidence
+	m.state.Keys[name] = stats
+	return m.persistStateLocked()
+}
+
+func (m *Manager) CalibrateQuota(name string, anchorAt time.Time, cycleSeconds int64) error {
+	if anchorAt.IsZero() {
+		return errors.New("quota anchor time is required")
+	}
+	if cycleSeconds < 60 || cycleSeconds > 10*365*24*60*60 {
+		return errors.New("quota cycle must be between 60 seconds and 10 years")
+	}
+	return m.RecordQuotaObservation(name, QuotaObservation{
+		ObservedAt: time.Now().UTC(), AnchorAt: anchorAt, CycleSeconds: cycleSeconds,
+		Source: QuotaSourceManual, Confidence: "high",
+	})
+}
+
+// ClaimDueQuotaProbes advances due boundaries and returns accounts that need
+// a separate quota probe. It intentionally does not clear cooldown or change
+// routing health; the probe result owns that transition.
+func (m *Manager) ClaimDueQuotaProbes(now time.Time) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now = now.UTC()
+	var due []string
+	changed := false
+	for _, key := range m.cfg.Keys {
+		stats := m.state.Keys[key.Name]
+		if stats.NextRefreshAt.IsZero() || stats.NextRefreshAt.After(now) || stats.LastCheckStatus != "quota_exhausted" {
+			continue
+		}
+		stats.NextRefreshAt = NextCycleBoundary(stats.QuotaCycleAnchorAt, stats.QuotaCycleSeconds, now)
+		m.state.Keys[key.Name] = stats
+		due = append(due, key.Name)
+		changed = true
+	}
+	if changed {
+		_ = m.persistStateLocked()
+	}
+	return due
+}
+
+func NextCycleBoundary(anchor time.Time, cycleSeconds int64, now time.Time) time.Time {
+	if anchor.IsZero() || cycleSeconds <= 0 {
+		return time.Time{}
+	}
+	anchor = anchor.UTC()
+	now = now.UTC()
+	if anchor.After(now) {
+		return anchor
+	}
+	cycle := time.Duration(cycleSeconds) * time.Second
+	steps := int64(now.Sub(anchor) / cycle)
+	next := anchor.Add(time.Duration(steps) * cycle)
+	if !next.After(now) {
+		next = next.Add(cycle)
+	}
+	return next.UTC()
+}
+
+func normalizeQuotaSource(source, confidence string) (string, string) {
+	switch source {
+	case QuotaSourceProvider, QuotaSourceObserved, QuotaSourceManual:
+	default:
+		source = QuotaSourceUnknown
+	}
+	switch confidence {
+	case "high", "medium", "low", "unknown":
+	default:
+		if source == QuotaSourceProvider || source == QuotaSourceManual {
+			confidence = "high"
+		} else if source == QuotaSourceObserved {
+			confidence = "medium"
+		} else {
+			confidence = "unknown"
+		}
+	}
+	return source, confidence
+}
+
+func quotaSourceRank(source string) int {
+	switch source {
+	case QuotaSourceProvider:
+		return 3
+	case QuotaSourceManual:
+		return 2
+	case QuotaSourceObserved:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func (m *Manager) SetAccountStatus(name, status, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -558,6 +750,31 @@ func cloneState(s State) State {
 		}
 	}
 	return copy
+}
+
+func (m *Manager) normalizeQuotaLocked(now time.Time) bool {
+	changed := false
+	for name, stats := range m.state.Keys {
+		if stats.QuotaCycleAnchorAt.IsZero() || stats.QuotaCycleSeconds <= 0 {
+			if !stats.NextRefreshAt.IsZero() {
+				stats.NextRefreshAt = time.Time{}
+				changed = true
+			}
+			continue
+		}
+		next := NextCycleBoundary(stats.QuotaCycleAnchorAt, stats.QuotaCycleSeconds, now)
+		if !next.Equal(stats.NextRefreshAt) {
+			stats.NextRefreshAt = next
+			changed = true
+		}
+		if stats.RefreshSource == "" {
+			stats.RefreshSource = QuotaSourceUnknown
+			stats.RefreshConfidence = "unknown"
+			changed = true
+		}
+		m.state.Keys[name] = stats
+	}
+	return changed
 }
 
 func formatError(status int, err error) string {

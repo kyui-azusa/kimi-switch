@@ -38,6 +38,13 @@ export interface KeyStats {
   last_check_at?: string;
   last_check_status?: "ok" | "quota_exhausted" | "rate_limited" | "invalid_key" | "account_disabled" | "forbidden" | "network_error" | "upstream_error" | "failed";
   last_check_ms?: number;
+  quota_cycle_anchor_at?: string;
+  quota_cycle_seconds?: number;
+  next_refresh_at?: string;
+  refresh_source?: "provider" | "observed" | "manual" | "unknown";
+  refresh_confidence?: "high" | "medium" | "low" | "unknown";
+  last_quota_observed_at?: string;
+  imported_at?: string;
 }
 
 export interface StatusResponse {
@@ -96,6 +103,11 @@ export interface ConnectivityResult {
   tested_at: string;
 }
 
+export interface QuotaCalibration {
+  anchor_at: string;
+  cycle_seconds: number;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -120,6 +132,7 @@ export const api = {
   deleteKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
   duplicateKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}/duplicate`, { method: "POST" }),
   testKey: (name: string) => request<ConnectivityResult>(`/api/keys/${encodeURIComponent(name)}/test`, { method: "POST" }),
+  calibrateQuota: (name: string, input: QuotaCalibration) => request(`/api/keys/${encodeURIComponent(name)}/quota`, { method: "POST", body: JSON.stringify(input) }),
   useKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}/use`, { method: "POST" }),
   toggleKey: (name: string, enabled: boolean) => request(`/api/keys/${encodeURIComponent(name)}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) }),
   setRotation: (enabled: boolean, mode: RotationConfig["mode"]) => request("/api/rotation", { method: "POST", body: JSON.stringify({ enabled, mode }) }),
