@@ -13,8 +13,7 @@ Updater signing, release-server deployment, and rollback are documented in [`doc
 - Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) instead of command-line arguments.
 - Supports manual active-key switching.
 - Supports an optional automatic rotation mode:
-  - `request`: recommended mode; least-requested-key routing, which keeps call frequency/order as even as possible.
-  - `token`: optional best-effort balancing using observed provider usage plus an input-size reservation for in-flight requests.
+  - `sticky`: keeps using the current key and only fails over when quota is exhausted, authentication fails, rate limits hit, or the upstream becomes unavailable.
 - Retries a request on an upstream 401, 429, or 5xx response only when rotation is enabled and no successful stream has started.
 - Puts rate-limited keys into a cooldown window.
 - Provides per-account and test-all availability checks using a one-output-token completion, so authentication-only success cannot hide an exhausted quota.
@@ -23,8 +22,6 @@ Updater signing, release-server deployment, and rollback are documented in [`doc
 - Records per-key and per-day request, success, error, input, output, cache-read, reasoning, observed-total, and estimated-token statistics.
 - Provides a separate Kimi Code direct/KimiSwitch takeover switch. Takeover changes only model-provider routing, preserves the original provider, creates `~/.kimi-code/config.toml.kimiswitch.bak`, and can restore direct mode atomically.
 - Does not scrape undocumented quota pages, spoof the client identity, or claim that locally observed usage is an account's remaining quota.
-
-The token mode is deliberately described as best effort. Different accounts can have different plans, windows, limits, or request costs, so no local scheduler can guarantee identical remaining quota. It prevents the common case where sequential requests keep using one key while the others stay untouched.
 
 ## Quick start
 
@@ -45,7 +42,7 @@ go run ./cmd/kimi-switch add work --env KIMI_WORK_KEY
 go run ./cmd/kimi-switch add personal --env KIMI_PERSONAL_KEY
 export KIMI_WORK_KEY='your-work-key'
 export KIMI_PERSONAL_KEY='your-personal-key'
-go run ./cmd/kimi-switch rotation on request
+go run ./cmd/kimi-switch rotation on sticky
 go run ./cmd/kimi-switch serve
 ```
 
@@ -105,7 +102,7 @@ OAuth-only providers are intentionally skipped. The importer is for API-key prov
 The desktop header has two independent switches:
 
 - **Kimi Code direct / KimiSwitch takeover** controls whether models in `~/.kimi-code/config.toml` use their original provider or the local KimiSwitch provider.
-- **Automatic rotation** controls how KimiSwitch chooses among imported accounts after takeover is enabled.
+- **Automatic rotation** controls whether KimiSwitch keeps the current account sticky and fails over only when that account stops working.
 
 Import remains read-only. Enabling takeover keeps the original provider block intact, writes a marked `kimi-switch-local` provider, redirects only model `provider` references that used the active original provider, and creates a one-time backup. Disabling takeover restores those references and removes the managed block. After either change, run `/reload` in an already-running Kimi Code session; new sessions read the new configuration directly.
 
@@ -120,7 +117,7 @@ GET  /healthz
 GET  /api/status
 GET  /api/usage
 PUT  /api/kimi/takeover          {"enabled":true}
-POST /api/rotation              {"enabled":true,"mode":"token"}
+POST /api/rotation              {"enabled":true,"mode":"sticky"}
 POST /api/keys/<name>/use
 POST /api/keys/<name>/test
 ```

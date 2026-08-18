@@ -49,7 +49,7 @@ func TestProxyFailsOverAfterRateLimit(t *testing.T) {
 	c.LocalAPIKey = "local"
 	c.ActiveKey = "first"
 	c.Rotation.Enabled = true
-	c.Rotation.Mode = "token"
+	c.Rotation.Mode = "sticky"
 	c.Rotation.MaxAttempts = 2
 	c.Keys = []config.KeyConfig{
 		{Name: "first", Enabled: true, APIKey: "first-key"},

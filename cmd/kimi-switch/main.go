@@ -125,7 +125,7 @@ func loadManager(path string) (*rotation.Manager, error) {
 
 func setRotation(path string, args []string) error {
 	if len(args) < 1 || (args[0] != "on" && args[0] != "off") {
-		return errors.New("usage: kimi-switch rotation on|off [token|request]")
+		return errors.New("usage: kimi-switch rotation on|off [sticky]")
 	}
 	mode := ""
 	if len(args) > 1 {
@@ -313,11 +313,11 @@ Commands:
   secret-set SERVICE                read one key from stdin into Keychain
   import-kimi [PATH]                import API-key providers from Kimi config.toml
   use <name>                        choose the manual active key
-  rotation on|off [token|request]    toggle automatic rotation
+  rotation on|off [sticky]           toggle sticky failover rotation
   list                              show key usage and cooldown state
   print-config                      print Kimi CLI local-proxy settings
   serve                             start the local proxy
 
 The default listener is 127.0.0.1:15722. Rotation is off by default.
-Token mode is best-effort balancing by observed/estimated token usage.`)
+Sticky mode keeps using the current key and only switches on failure. Legacy request/token modes are migrated automatically.`)
 }

@@ -16,6 +16,7 @@ const (
 	DefaultUpstreamBase           = "https://api.kimi.com/coding/v1"
 	DefaultLocalAPIKey            = "local-kimi-switch"
 	DefaultFailureCooldownSeconds = 600
+	RotationModeSticky            = "sticky"
 )
 
 // Config is intentionally separate from Kimi Code's config.toml. KimiSwitch
@@ -33,7 +34,7 @@ type Config struct {
 
 type RotationConfig struct {
 	Enabled          bool   `json:"enabled"`
-	Mode             string `json:"mode"` // token or request
+	Mode             string `json:"mode"` // sticky; request/token are legacy aliases
 	MaxAttempts      int    `json:"max_attempts"`
 	CooldownSeconds  int    `json:"cooldown_seconds"`
 	RetryRateLimited bool   `json:"retry_rate_limited"`
@@ -57,7 +58,7 @@ func Default() Config {
 		LocalAPIKey:     DefaultLocalAPIKey,
 		Rotation: RotationConfig{
 			Enabled:          false,
-			Mode:             "request",
+			Mode:             RotationModeSticky,
 			MaxAttempts:      2,
 			CooldownSeconds:  DefaultFailureCooldownSeconds,
 			RetryRateLimited: true,
@@ -73,12 +74,11 @@ func (c *Config) Normalize() error {
 	if strings.TrimSpace(c.UpstreamBaseURL) == "" {
 		c.UpstreamBaseURL = DefaultUpstreamBase
 	}
-	if c.Rotation.Mode == "" {
-		c.Rotation.Mode = "request"
+	mode, err := NormalizeRotationMode(c.Rotation.Mode)
+	if err != nil {
+		return err
 	}
-	if c.Rotation.Mode != "token" && c.Rotation.Mode != "request" {
-		return fmt.Errorf("rotation.mode must be token or request, got %q", c.Rotation.Mode)
-	}
+	c.Rotation.Mode = mode
 	if c.Rotation.MaxAttempts < 1 {
 		c.Rotation.MaxAttempts = 2
 	}
@@ -109,6 +109,15 @@ func (c *Config) Normalize() error {
 		c.ActiveKey = c.Keys[0].Name
 	}
 	return nil
+}
+
+func NormalizeRotationMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "request", "token", RotationModeSticky:
+		return RotationModeSticky, nil
+	default:
+		return "", fmt.Errorf("rotation.mode must be sticky, got %q", mode)
+	}
 }
 
 func Path() string {

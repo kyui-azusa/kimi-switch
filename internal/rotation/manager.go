@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -124,18 +123,31 @@ func (m *Manager) Save() error {
 func (m *Manager) SetActive(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.hasKeyLocked(name) {
+	index := m.keyIndexLocked(name)
+	if index < 0 {
 		return fmt.Errorf("unknown key %q", name)
 	}
-	m.cfg.ActiveKey = name
-	return m.persistLocked()
+	originalCfg := m.cfg
+	originalState := cloneState(m.state)
+	m.cfg.Keys[index].Enabled = true
+	m.preferKeyLocked(name)
+	if err := m.persistLocked(); err != nil {
+		m.cfg = originalCfg
+		m.state = originalState
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) SetRotation(enabled bool, mode string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if mode != "" && mode != "token" && mode != "request" {
-		return fmt.Errorf("rotation mode must be token or request")
+	if mode != "" {
+		normalized, err := config.NormalizeRotationMode(mode)
+		if err != nil {
+			return err
+		}
+		mode = normalized
 	}
 	m.cfg.Rotation.Enabled = enabled
 	if mode != "" {
@@ -229,8 +241,18 @@ func (m *Manager) SetKeyEnabled(name string, enabled bool) error {
 	defer m.mu.Unlock()
 	for i := range m.cfg.Keys {
 		if m.cfg.Keys[i].Name == name {
+			originalCfg := m.cfg
+			originalState := cloneState(m.state)
 			m.cfg.Keys[i].Enabled = enabled
-			return m.persistLocked()
+			if enabled {
+				m.preferKeyLocked(name)
+			}
+			if err := m.persistLocked(); err != nil {
+				m.cfg = originalCfg
+				m.state = originalState
+				return err
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("unknown key %q", name)
@@ -269,9 +291,11 @@ func (m *Manager) UpdateSettings(upstream string, rotationConfig config.Rotation
 	if strings.TrimSpace(upstream) != "" {
 		m.cfg.UpstreamBaseURL = strings.TrimSpace(upstream)
 	}
-	if rotationConfig.Mode != "token" && rotationConfig.Mode != "request" {
-		return errors.New("rotation mode must be token or request")
+	normalized, err := config.NormalizeRotationMode(rotationConfig.Mode)
+	if err != nil {
+		return err
 	}
+	rotationConfig.Mode = normalized
 	if rotationConfig.MaxAttempts < 1 {
 		return errors.New("max_attempts must be at least 1")
 	}
@@ -290,7 +314,11 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 	}
 	name := ""
 	if m.cfg.Rotation.Enabled {
-		name = m.selectBalancedLocked(false)
+		var err error
+		name, err = m.selectStickyLocked(false)
+		if err != nil {
+			return Selected{}, err
+		}
 	} else if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && !m.cooldownLocked(key.Name) {
 		name = key.Name
 	} else {
@@ -299,7 +327,15 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 	// A cooled-down account is only retried when every enabled account is
 	// unavailable. This keeps traffic moving without permanently deadlocking.
 	if name == "" {
-		name = m.selectBalancedLocked(true)
+		if m.cfg.Rotation.Enabled {
+			var err error
+			name, err = m.selectStickyLocked(true)
+			if err != nil {
+				return Selected{}, err
+			}
+		} else {
+			name = m.selectFirstEnabledLocked()
+		}
 	}
 	if name == "" {
 		return Selected{}, errors.New("no active Kimi key configured")
@@ -460,26 +496,27 @@ func (m *Manager) Snapshot() (config.Config, State) {
 	return m.cfg, cloneState(m.state)
 }
 
-func (m *Manager) selectBalancedLocked(allowCooldown bool) string {
-	best := ""
-	bestScore := int64(0)
-	keys := append([]config.KeyConfig(nil), m.cfg.Keys...)
-	sort.SliceStable(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
-	for _, key := range keys {
+func (m *Manager) selectStickyLocked(allowCooldown bool) (string, error) {
+	if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && (allowCooldown || !m.cooldownLocked(key.Name)) {
+		return key.Name, nil
+	}
+	for _, key := range m.cfg.Keys {
 		if !key.Enabled || (!allowCooldown && m.cooldownLocked(key.Name)) {
 			continue
 		}
-		stats := m.state.Keys[key.Name]
-		score := stats.InputTokens + stats.OutputTokens + stats.EstimatedTokens + stats.ReservedTokens
-		if m.cfg.Rotation.Mode == "request" {
-			score = stats.Requests + stats.InFlight
+		if key.Name != m.cfg.ActiveKey {
+			originalCfg := m.cfg
+			originalState := cloneState(m.state)
+			m.preferKeyLocked(key.Name)
+			if err := config.Save(m.configPath, m.cfg); err != nil {
+				m.cfg = originalCfg
+				m.state = originalState
+				return "", err
+			}
 		}
-		if best == "" || score < bestScore {
-			best = key.Name
-			bestScore = score
-		}
+		return key.Name, nil
 	}
-	return best
+	return "", nil
 }
 
 func (m *Manager) selectFirstHealthyLocked() string {
@@ -489,6 +526,24 @@ func (m *Manager) selectFirstHealthyLocked() string {
 		}
 	}
 	return ""
+}
+
+func (m *Manager) selectFirstEnabledLocked() string {
+	for _, key := range m.cfg.Keys {
+		if key.Enabled {
+			return key.Name
+		}
+	}
+	return ""
+}
+
+func (m *Manager) preferKeyLocked(name string) {
+	m.cfg.ActiveKey = name
+	stats := m.state.Keys[name]
+	stats.CooldownUntil = time.Time{}
+	stats.LastError = ""
+	stats.LastCheckStatus = ""
+	m.state.Keys[name] = stats
 }
 
 func (m *Manager) cooldownLocked(name string) bool {
@@ -502,12 +557,25 @@ func (m *Manager) hasKeyLocked(name string) bool {
 }
 
 func (m *Manager) keyLocked(name string) (config.KeyConfig, bool) {
-	for _, k := range m.cfg.Keys {
-		if k.Name == name {
-			return k, true
-		}
+	index := m.keyIndexLocked(name)
+	if index >= 0 {
+		return m.cfg.Keys[index], true
 	}
 	return config.KeyConfig{}, false
+}
+
+func (m *Manager) keyIndexLocked(name string) int {
+	for _, k := range m.cfg.Keys {
+		if k.Name == name {
+			break
+		}
+	}
+	for i := range m.cfg.Keys {
+		if m.cfg.Keys[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Manager) persistLocked() error {

@@ -321,10 +321,10 @@ function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setD
           </div>
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">自动轮换</h2><p className="mt-1 text-sm text-muted-foreground">按调用顺序分散请求；不读取也不声称知道账号剩余额度。</p></div><Switch checked={rotation.enabled} onCheckedChange={(enabled) => setRotation((old) => ({ ...old, enabled }))} /></div>
+          <div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">自动轮换</h2><p className="mt-1 text-sm text-muted-foreground">默认持续使用当前账号；只有额度耗尽、鉴权失败、限流或上游不可用时才切到下一个可用账号。</p></div><Switch checked={rotation.enabled} onCheckedChange={(enabled) => setRotation((old) => ({ ...old, enabled }))} /></div>
           <div className="mt-5 grid gap-5 sm:grid-cols-2">
-            <Field label="轮换模式" hint="按请求次数最直观；Token 观察根据本地已见用量做近似分散。">
-              <select className={fieldClass} value={rotation.mode} onChange={(e) => setRotation((old) => ({ ...old, mode: e.target.value as RotationConfig["mode"] }))}><option value="request">按请求次数</option><option value="token">按已观察 Token</option></select>
+            <Field label="切换策略" hint="当前账号健康时不会主动换 Key；切走后会保持在新的账号上。">
+              <input className={fieldClass} value="故障时切换" disabled />
             </Field>
             <Field label="单次最大尝试账号数"><input className={fieldClass} type="number" min={1} max={20} value={rotation.max_attempts} onChange={(e) => setRotation((old) => ({ ...old, max_attempts: Number(e.target.value) }))} /></Field>
             <Field label="失败冷却（秒）" hint="至少 600 秒；失败账号在仍有其他可用账号时不会被选择。"><input className={fieldClass} type="number" min={600} value={rotation.cooldown_seconds} onChange={(e) => setRotation((old) => ({ ...old, cooldown_seconds: Number(e.target.value) }))} /></Field>
@@ -678,13 +678,13 @@ export default function App() {
       <main className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-6xl">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-            <div><h1 className="text-2xl font-semibold tracking-tight">Kimi Code 账号</h1><p className="mt-1 text-sm text-muted-foreground">管理已授权的账号、切换当前 Key，并按调用顺序轮换。</p></div>
+            <div><h1 className="text-2xl font-semibold tracking-tight">Kimi Code 账号</h1><p className="mt-1 text-sm text-muted-foreground">管理已授权的账号、切换当前 Key，并在故障时自动切到下一个可用账号。</p></div>
             <div className="flex items-center gap-2"><Button variant="outline" title="逐个发送最多 1 个输出 Token，检测真实额度与鉴权状态" disabled={testingKeys.size > 0} onClick={() => void testAllAccounts()}><RadioTower className={cn("h-4 w-4", testingKeys.size > 0 && "animate-pulse")} />{testingKeys.size > 0 ? `测试中 ${testingKeys.size}` : "测试全部"}</Button><Button variant="outline" onClick={() => setPanel({ kind: "import" })}><Download className="h-4 w-4" />导入当前配置</Button><Button onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" />添加账号</Button></div>
           </div>
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">账号</div><div className="mt-1 text-xl font-semibold">{status.config.keys.length}</div></div>
-            <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">轮换模式</div><div className="mt-1 truncate text-sm font-semibold">{status.config.rotation.enabled ? status.config.rotation.mode === "request" ? "按请求次数" : "按 Token 观察" : "未开启"}</div></div>
+            <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">轮换模式</div><div className="mt-1 truncate text-sm font-semibold">{status.config.rotation.enabled ? "故障时切换" : "未开启"}</div></div>
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">总请求</div><div className="mt-1 text-xl font-semibold">{formatNumber(Object.values(status.keys).reduce((sum, value) => sum + value.requests, 0))}</div></div>
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">已观察 Token</div><div className="mt-1 text-xl font-semibold">{formatNumber(Object.values(status.keys).reduce((sum, value) => sum + value.total_tokens, 0))}</div></div>
           </div>
@@ -700,7 +700,7 @@ export default function App() {
             <div className="grid gap-3">{accounts.map((item) => <AccountCard key={item.name} item={item} stats={status.keys[item.name] || emptyStats} active={status.config.active_key === item.name} rotationEnabled={status.config.rotation.enabled} testing={testingKeys.has(item.name)} onAction={action} />)}</div>
           ) : <div className="rounded-lg border border-dashed border-border p-10 text-center text-sm text-muted-foreground">没有匹配的账号</div>}
 
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15722/v1</span><span>{status.config.rotation.enabled ? `轮换已开启 · ${status.config.rotation.mode === "request" ? "按请求" : "Token 观察"}` : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15722/v1</span><span>{status.config.rotation.enabled ? "轮换已开启 · 故障时切换" : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
         </div>
       </main>
 
