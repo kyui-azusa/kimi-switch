@@ -2,6 +2,12 @@ name: Build and publish installers
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Republish the current package version and update manifest
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
@@ -81,6 +87,25 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: Validate macOS DMG presentation
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+
+          mount_dir="$(mktemp -d)"
+          trap 'hdiutil detach "$mount_dir" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "${dmgs[0]}" >/dev/null
+
+          test -f "$mount_dir/.DS_Store"
+          test -f "$mount_dir/.background/background.png"
+          test "$(sips -g pixelWidth "$mount_dir/.background/background.png" | awk '/pixelWidth/ {print $2}')" = "660"
+          test "$(sips -g pixelHeight "$mount_dir/.background/background.png" | awk '/pixelHeight/ {print $2}')" = "400"
+          strings "$mount_dir/.DS_Store" | grep -Fq '.background/background.png'
+
       - name: Upload signed build output
         uses: actions/upload-artifact@v7
         with:
@@ -90,7 +115,7 @@ jobs:
 
   publish:
     name: Publish atomic update manifest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: build
     runs-on: ubuntu-latest
     env:
@@ -106,6 +131,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            release_tag="$GITHUB_REF_NAME"
+          else
+            release_tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+
       - name: Download all platform artifacts
         uses: actions/download-artifact@v8
         with:
@@ -114,23 +150,26 @@ jobs:
       - name: Generate and validate latest.json
         shell: bash
         run: |
+          release_tag="${{ steps.release.outputs.tag }}"
           if [ -n "$UPDATE_BASE_URL" ]; then
-            base_url="${UPDATE_BASE_URL%/}/releases/${GITHUB_REF_NAME}"
+            base_url="${UPDATE_BASE_URL%/}/releases/${release_tag}"
           else
-            base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+            base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
           fi
           node scripts/build-update-manifest.mjs \
             --artifacts release-artifacts \
             --output release-files \
-            --version "${GITHUB_REF_NAME}" \
+            --version "$release_tag" \
             --base-url "$base_url" \
-            --notes "KimiSwitch ${GITHUB_REF_NAME}. The first updater-enabled release must be installed manually; later releases can update in-app."
+            --notes "KimiSwitch ${release_tag}. The first updater-enabled release must be installed manually; later releases can update in-app."
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
           draft: false
           fail_on_unmatched_files: true
+          overwrite_files: true
           generate_release_notes: true
           files: release-files/*
 
@@ -153,6 +192,6 @@ jobs:
         if: env.UPDATE_DEPLOY_HOST != ''
         shell: bash
         run: |
-          release_path="${UPDATE_DEPLOY_PATH%/}/releases/${GITHUB_REF_NAME}"
+          release_path="${UPDATE_DEPLOY_PATH%/}/releases/${{ steps.release.outputs.tag }}"
           rsync -av --mkpath -e "ssh -p $UPDATE_DEPLOY_PORT" --exclude latest.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
           rsync -av -e "ssh -p $UPDATE_DEPLOY_PORT" release-files/latest.json "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:${UPDATE_DEPLOY_PATH%/}/latest.json"
