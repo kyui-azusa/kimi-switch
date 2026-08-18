@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import packageMetadata from "../package.json";
 import {
   Activity,
   ArrowLeft,
@@ -284,8 +286,9 @@ function AccountForm({ current, onBack, onSaved, notify }: {
   );
 }
 
-function SettingsPanel({ status, onBack, onSaved, notify, dark, setDark, onUpdates }: {
+function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setDark, onUpdates }: {
   status: StatusResponse;
+  appVersion: string;
   onBack: () => void;
   onSaved: () => Promise<void>;
   notify: (message: string, error?: boolean) => void;
@@ -332,7 +335,7 @@ function SettingsPanel({ status, onBack, onSaved, notify, dark, setDark, onUpdat
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">深色模式</h2><p className="mt-1 text-sm text-muted-foreground">只影响 KimiSwitch 桌面界面。</p></div><Button variant="outline" onClick={() => setDark(!dark)}>{dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{dark ? "切换浅色" : "切换深色"}</Button></div>
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">软件更新</h2><p className="mt-1 text-sm text-muted-foreground">检查签名更新包并在安装后自动重启。</p></div><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div>
+          <div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">软件更新</h2><p className="mt-1 text-sm text-muted-foreground">当前版本 v{appVersion}；检查签名更新包并在安装后自动重启。</p></div><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div>
         </section>
         <section className="rounded-xl border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
           <p>KimiSwitch 的桌面界面排布和部分 UI 组件基于 CC Switch（MIT License）调整；代理与 Kimi 配置逻辑为 KimiSwitch 实现。</p>
@@ -510,6 +513,7 @@ export default function App() {
   const [deleteTarget, setDeleteTarget] = useState<KeyConfig | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [appVersion, setAppVersion] = useState(packageMetadata.version);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const notify = useCallback((message: string, error = false) => {
@@ -532,6 +536,14 @@ export default function App() {
     const timer = window.setInterval(() => void refresh(true), 5000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVersion().then((version) => {
+      if (!cancelled) setAppVersion(version);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -654,7 +666,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex h-16 flex-shrink-0 items-center justify-between gap-3 border-b border-border bg-background/85 px-6 backdrop-blur-md" data-tauri-drag-region>
-        <div className="no-drag flex items-center gap-1.5"><button className="text-xl font-semibold text-blue-500 transition-colors hover:text-blue-600">KimiSwitch</button><Button variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button>{availableUpdate && <Button variant="ghost" size="icon" title={`发现新版本 ${availableUpdate.version}`} onClick={() => setPanel({ kind: "updates", update: availableUpdate })}><Download className="h-4 w-4 text-blue-500" /></Button>}<Button variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
+        <div className="no-drag flex items-center gap-1.5"><div className="mr-1 flex items-baseline gap-2"><span className="text-xl font-semibold text-blue-500">KimiSwitch</span><span className="min-w-12 text-xs tabular-nums text-muted-foreground">v{appVersion}</span></div><Button variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button>{availableUpdate && <Button variant="ghost" size="icon" title={`发现新版本 ${availableUpdate.version}`} onClick={() => setPanel({ kind: "updates", update: availableUpdate })}><Download className="h-4 w-4 text-blue-500" /></Button>}<Button variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
         <div className="no-drag flex items-center gap-2">
           <span className="hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />代理运行中</span>
           <div className={cn("flex items-center gap-2 rounded-lg border px-3 py-1.5", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || `配置：${status.kimi_takeover.config_path}`}><span className="text-xs text-muted-foreground">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span><Switch checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
@@ -693,7 +705,7 @@ export default function App() {
       </main>
 
       {panel?.kind === "form" && <AccountForm current={panel.key} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} />}
-      {panel?.kind === "settings" && <SettingsPanel status={status} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} onUpdates={() => setPanel({ kind: "updates", update: availableUpdate || undefined })} />}
+      {panel?.kind === "settings" && <SettingsPanel status={status} appVersion={appVersion} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} onUpdates={() => setPanel({ kind: "updates", update: availableUpdate || undefined })} />}
       {panel?.kind === "updates" && <UpdatePanel initialUpdate={panel.update} onBack={() => setPanel(null)} notify={notify} />}
       {panel?.kind === "import" && <ImportPanel onBack={() => setPanel(null)} onImported={() => refresh(true)} notify={notify} />}
       {panel?.kind === "usage" && <UsagePanel status={status} onBack={() => setPanel(null)} />}
