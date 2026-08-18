@@ -23,6 +23,11 @@ import (
 
 const maxResponseBytes = 64 << 20
 
+var (
+	secretRead  = secret.Read
+	secretWrite = secret.Write
+)
+
 type Server struct {
 	manager *rotation.Manager
 	client  *http.Client
@@ -422,12 +427,12 @@ func (s *Server) handleKeyUpsert(w http.ResponseWriter, r *http.Request, origina
 	}
 	if input.APIKey != "" {
 		service := "kimi-switch/" + input.Name
-		if err := secret.Write(service, input.APIKey); err != nil {
+		if err := secretWrite(service, input.APIKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		key.SecretRef = service
-		key.APIKey = ""
+		key.APIKey = strings.TrimSpace(input.APIKey)
 		key.APIKeyEnv = ""
 	} else if key.APIKeyEnv != "" {
 		key.SecretRef = ""
@@ -462,11 +467,11 @@ func (s *Server) handleKimiImport(w http.ResponseWriter, r *http.Request) {
 	imported := []string{}
 	for name, apiKey := range providers {
 		service := "kimi-switch/" + name
-		if err := secret.Write(service, apiKey); err != nil {
+		if err := secretWrite(service, apiKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, Enabled: true}
+		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, APIKey: apiKey, Enabled: true}
 		original := ""
 		for _, existing := range s.manager.Config().Keys {
 			if existing.Name == name {
@@ -631,6 +636,16 @@ func (s *Server) streamResponse(w http.ResponseWriter, response *http.Response, 
 }
 
 func resolveAPIKey(key config.KeyConfig) (string, error) {
+	if key.SecretRef != "" {
+		value, err := secretRead(key.SecretRef)
+		if err == nil {
+			return value, nil
+		}
+		if key.APIKey != "" {
+			return key.APIKey, nil
+		}
+		return "", err
+	}
 	if key.APIKey != "" {
 		return key.APIKey, nil
 	}
@@ -639,9 +654,6 @@ func resolveAPIKey(key config.KeyConfig) (string, error) {
 			return value, nil
 		}
 		return "", fmt.Errorf("environment variable %s is empty", key.APIKeyEnv)
-	}
-	if key.SecretRef != "" {
-		return secret.Read(key.SecretRef)
 	}
 	return "", fmt.Errorf("key %q has no api_key, api_key_env, or secret_ref", key.Name)
 }
@@ -787,7 +799,9 @@ func publicConfig(c config.Config) map[string]any {
 	keys := make([]map[string]any, 0, len(c.Keys))
 	for _, key := range c.Keys {
 		source := "inline"
-		if key.SecretRef != "" {
+		if key.SecretRef != "" && key.APIKey != "" {
+			source = "keychain+local"
+		} else if key.SecretRef != "" {
 			source = "keychain"
 		} else if key.APIKeyEnv != "" {
 			source = "environment"

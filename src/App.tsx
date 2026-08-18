@@ -59,6 +59,7 @@ function formatNumber(value = 0) {
 }
 
 function sourceLabel(key: KeyConfig) {
+  if (key.source === "keychain+local") return "系统凭据库 + 本地降级副本";
   if (key.source === "keychain") return "系统凭据库";
   if (key.source === "environment") return key.api_key_env || "环境变量";
   return "本地配置";
