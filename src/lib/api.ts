@@ -33,6 +33,11 @@ export interface KeyStats {
   reserved_tokens: number;
   in_flight: number;
   cooldown_until?: string;
+  route_status?: "healthy" | "quarantined" | "probing";
+  next_probe_at?: string;
+  last_probe_at?: string;
+  last_probe_status?: string;
+  last_recovered_at?: string;
   last_used_at?: string;
   last_error?: string;
   last_check_at?: string;

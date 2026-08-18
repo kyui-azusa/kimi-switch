@@ -27,6 +27,11 @@ type Stats struct {
 	ReservedTokens  int64     `json:"reserved_tokens"`
 	InFlight        int64     `json:"in_flight"`
 	CooldownUntil   time.Time `json:"cooldown_until,omitempty"`
+	RouteStatus     string    `json:"route_status"`
+	NextProbeAt     time.Time `json:"next_probe_at,omitempty"`
+	LastProbeAt     time.Time `json:"last_probe_at,omitempty"`
+	LastProbeStatus string    `json:"last_probe_status,omitempty"`
+	LastRecoveredAt time.Time `json:"last_recovered_at,omitempty"`
 	LastUsedAt      time.Time `json:"last_used_at,omitempty"`
 	LastError       string    `json:"last_error,omitempty"`
 	LastCheckAt     time.Time `json:"last_check_at,omitempty"`
@@ -67,12 +72,21 @@ type Usage struct {
 }
 
 type Manager struct {
-	mu         sync.Mutex
-	cfg        config.Config
-	state      State
-	configPath string
-	statePath  string
+	mu            sync.Mutex
+	cfg           config.Config
+	state         State
+	configPath    string
+	statePath     string
+	probeRecovery map[string]bool
 }
+
+const (
+	RouteHealthy     = "healthy"
+	RouteQuarantined = "quarantined"
+	RouteProbing     = "probing"
+)
+
+var ErrProbeInProgress = errors.New("account recovery probe already in progress")
 
 func NewManager(c config.Config, configPath, statePath string) (*Manager, error) {
 	if err := c.Normalize(); err != nil {
@@ -92,15 +106,29 @@ func NewManager(c config.Config, configPath, statePath string) (*Manager, error)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	stateChanged := false
 	for _, k := range c.Keys {
 		if _, ok := s.Keys[k.Name]; !ok {
-			s.Keys[k.Name] = Stats{}
+			s.Keys[k.Name] = Stats{RouteStatus: RouteHealthy}
+			stateChanged = true
+			continue
 		}
+		stats := s.Keys[k.Name]
+		if migrateStats(&stats, c.Rotation.CooldownSeconds) {
+			stateChanged = true
+		}
+		s.Keys[k.Name] = stats
 	}
 	if strings.TrimSpace(configPath) == "" {
 		return nil, errors.New("config path is required")
 	}
-	return &Manager{cfg: c, state: s, configPath: configPath, statePath: statePath}, nil
+	m := &Manager{cfg: c, state: s, configPath: configPath, statePath: statePath, probeRecovery: map[string]bool{}}
+	if stateChanged {
+		if err := m.persistStateLocked(); err != nil {
+			return nil, err
+		}
+	}
+	return m, nil
 }
 
 func (m *Manager) Config() config.Config {
@@ -186,7 +214,7 @@ func (m *Manager) UpsertKey(originalName string, key config.KeyConfig) error {
 		}
 	} else {
 		m.cfg.Keys = append(m.cfg.Keys, key)
-		m.state.Keys[key.Name] = Stats{}
+		m.state.Keys[key.Name] = Stats{RouteStatus: RouteHealthy}
 		if m.cfg.ActiveKey == "" {
 			m.cfg.ActiveKey = key.Name
 		}
@@ -259,7 +287,7 @@ func (m *Manager) DuplicateKey(name string) (string, error) {
 	source.Account = strings.TrimSpace(source.Account + " copy")
 	source.CreatedAt = time.Now().UnixMilli()
 	m.cfg.Keys = append(m.cfg.Keys, *source)
-	m.state.Keys[newName] = Stats{}
+	m.state.Keys[newName] = Stats{RouteStatus: RouteHealthy}
 	return newName, m.persistLocked()
 }
 
@@ -290,19 +318,14 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 	}
 	name := ""
 	if m.cfg.Rotation.Enabled {
-		name = m.selectBalancedLocked(false)
-	} else if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && !m.cooldownLocked(key.Name) {
+		name = m.selectBalancedLocked()
+	} else if key, ok := m.keyLocked(m.cfg.ActiveKey); ok && key.Enabled && m.healthyLocked(key.Name) {
 		name = key.Name
 	} else {
 		name = m.selectFirstHealthyLocked()
 	}
-	// A cooled-down account is only retried when every enabled account is
-	// unavailable. This keeps traffic moving without permanently deadlocking.
 	if name == "" {
-		name = m.selectBalancedLocked(true)
-	}
-	if name == "" {
-		return Selected{}, errors.New("no active Kimi key configured")
+		return Selected{}, errors.New("no healthy Kimi key available")
 	}
 	key, ok := m.keyLocked(name)
 	if !ok {
@@ -345,14 +368,16 @@ func (m *Manager) Finish(selected Selected, status int, usage Usage, requestErro
 		stats.LastError = formatError(status, requestError)
 		stats.LastCheckAt = time.Now().UTC()
 		stats.LastCheckStatus = basicFailureStatus(status, requestError)
-		stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
+		m.quarantineLocked(&stats, false)
 	} else {
 		stats.Successes++
 		daily.Successes++
 		stats.LastError = ""
 		stats.LastCheckAt = time.Now().UTC()
 		stats.LastCheckStatus = "ok"
+		stats.RouteStatus = RouteHealthy
 		stats.CooldownUntil = time.Time{}
+		stats.NextProbeAt = time.Time{}
 	}
 	if usage.Known {
 		stats.InputTokens += usage.InputTokens
@@ -383,8 +408,8 @@ func (m *Manager) MarkCooldown(name string, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stats := m.state.Keys[name]
-	stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
 	stats.LastError = reason
+	m.quarantineLocked(&stats, false)
 	m.state.Keys[name] = stats
 	_ = m.persistStateLocked()
 }
@@ -396,7 +421,11 @@ func (m *Manager) RecordConnectivity(name, status string, latency time.Duration,
 		return fmt.Errorf("unknown key %q", name)
 	}
 	stats := m.state.Keys[name]
+	wasRecovery := m.probeRecovery[name]
+	delete(m.probeRecovery, name)
 	stats.LastCheckAt = time.Now().UTC()
+	stats.LastProbeAt = stats.LastCheckAt
+	stats.LastProbeStatus = status
 	stats.LastCheckMS = latency.Milliseconds()
 	if stats.LastCheckMS < 0 {
 		stats.LastCheckMS = 0
@@ -405,13 +434,78 @@ func (m *Manager) RecordConnectivity(name, status string, latency time.Duration,
 		stats.LastCheckStatus = "ok"
 		stats.LastError = ""
 		stats.CooldownUntil = time.Time{}
+		stats.NextProbeAt = time.Time{}
+		stats.RouteStatus = RouteHealthy
+		if wasRecovery {
+			stats.LastRecoveredAt = stats.LastCheckAt
+		}
 	} else {
 		stats.LastCheckStatus = status
 		stats.LastError = strings.TrimSpace(reason)
-		stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
+		m.quarantineLocked(&stats, true)
 	}
 	m.state.Keys[name] = stats
 	return m.persistStateLocked()
+}
+
+// BeginProbe atomically reserves an account for a connectivity probe. A
+// recovery probe must be due; manual tests may probe any configured account.
+func (m *Manager) BeginProbe(name string, recoveryOnly bool) (config.KeyConfig, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, ok := m.keyLocked(name)
+	if !ok {
+		return config.KeyConfig{}, fmt.Errorf("unknown key %q", name)
+	}
+	stats := m.state.Keys[name]
+	if stats.RouteStatus == "" {
+		migrateStats(&stats, m.cfg.Rotation.CooldownSeconds)
+	}
+	if stats.RouteStatus == RouteProbing {
+		return config.KeyConfig{}, ErrProbeInProgress
+	}
+	if recoveryOnly && (stats.RouteStatus != RouteQuarantined || !probeDue(stats)) {
+		return config.KeyConfig{}, errors.New("account recovery probe is not due")
+	}
+	wasQuarantined := stats.RouteStatus == RouteQuarantined
+	previous := stats
+	stats.RouteStatus = RouteProbing
+	m.probeRecovery[name] = recoveryOnly || wasQuarantined
+	m.state.Keys[name] = stats
+	if err := m.persistStateLocked(); err != nil {
+		m.state.Keys[name] = previous
+		delete(m.probeRecovery, name)
+		return config.KeyConfig{}, err
+	}
+	return key, nil
+}
+
+// BeginDueProbe reserves the next due quarantined account, if one exists.
+func (m *Manager) BeginDueProbe() (config.KeyConfig, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys := append([]config.KeyConfig(nil), m.cfg.Keys...)
+	sort.SliceStable(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
+	for _, key := range keys {
+		if !key.Enabled {
+			continue
+		}
+		stats := m.state.Keys[key.Name]
+		if stats.RouteStatus != RouteQuarantined || !probeDue(stats) {
+			continue
+		}
+		previous := stats
+		stats.RouteStatus = RouteProbing
+		m.probeRecovery[key.Name] = true
+		m.state.Keys[key.Name] = stats
+		if err := m.persistStateLocked(); err != nil {
+			m.state.Keys[key.Name] = previous
+			delete(m.probeRecovery, key.Name)
+			return config.KeyConfig{}, false
+		}
+		return key, true
+	}
+	return config.KeyConfig{}, false
 }
 
 func (m *Manager) SetAccountStatus(name, status, reason string) {
@@ -426,8 +520,10 @@ func (m *Manager) SetAccountStatus(name, status, reason string) {
 	stats.LastError = strings.TrimSpace(reason)
 	if status == "ok" {
 		stats.CooldownUntil = time.Time{}
+		stats.NextProbeAt = time.Time{}
+		stats.RouteStatus = RouteHealthy
 	} else {
-		stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
+		m.quarantineLocked(&stats, false)
 	}
 	m.state.Keys[name] = stats
 	_ = m.persistStateLocked()
@@ -447,7 +543,7 @@ func (m *Manager) AvailableKeyCount() int {
 	defer m.mu.Unlock()
 	n := 0
 	for _, k := range m.cfg.Keys {
-		if k.Enabled && !m.cooldownLocked(k.Name) {
+		if k.Enabled && m.healthyLocked(k.Name) {
 			n++
 		}
 	}
@@ -460,13 +556,13 @@ func (m *Manager) Snapshot() (config.Config, State) {
 	return m.cfg, cloneState(m.state)
 }
 
-func (m *Manager) selectBalancedLocked(allowCooldown bool) string {
+func (m *Manager) selectBalancedLocked() string {
 	best := ""
 	bestScore := int64(0)
 	keys := append([]config.KeyConfig(nil), m.cfg.Keys...)
 	sort.SliceStable(keys, func(i, j int) bool { return keys[i].Name < keys[j].Name })
 	for _, key := range keys {
-		if !key.Enabled || (!allowCooldown && m.cooldownLocked(key.Name)) {
+		if !key.Enabled || !m.healthyLocked(key.Name) {
 			continue
 		}
 		stats := m.state.Keys[key.Name]
@@ -484,16 +580,74 @@ func (m *Manager) selectBalancedLocked(allowCooldown bool) string {
 
 func (m *Manager) selectFirstHealthyLocked() string {
 	for _, key := range m.cfg.Keys {
-		if key.Enabled && !m.cooldownLocked(key.Name) {
+		if key.Enabled && m.healthyLocked(key.Name) {
 			return key.Name
 		}
 	}
 	return ""
 }
 
-func (m *Manager) cooldownLocked(name string) bool {
-	until := m.state.Keys[name].CooldownUntil
-	return !until.IsZero() && time.Now().UTC().Before(until)
+func (m *Manager) healthyLocked(name string) bool {
+	return m.state.Keys[name].RouteStatus == RouteHealthy
+}
+
+func (m *Manager) quarantineLocked(stats *Stats, fromProbe bool) {
+	now := time.Now().UTC()
+	delay := time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second
+	stats.RouteStatus = RouteQuarantined
+	stats.NextProbeAt = now.Add(delay)
+	stats.CooldownUntil = stats.NextProbeAt
+	if !fromProbe {
+		stats.LastProbeAt = time.Time{}
+		stats.LastProbeStatus = ""
+	}
+}
+
+func probeDue(stats Stats) bool {
+	return !stats.NextProbeAt.IsZero() && !time.Now().UTC().Before(stats.NextProbeAt)
+}
+
+func migrateStats(stats *Stats, cooldownSeconds int) bool {
+	now := time.Now().UTC()
+	changed := false
+	if stats.RouteStatus == RouteProbing {
+		stats.RouteStatus = RouteQuarantined
+		changed = true
+	}
+	if stats.RouteStatus == RouteHealthy {
+		if !stats.NextProbeAt.IsZero() || !stats.CooldownUntil.IsZero() {
+			stats.NextProbeAt = time.Time{}
+			stats.CooldownUntil = time.Time{}
+			changed = true
+		}
+		return changed
+	}
+	if stats.RouteStatus == RouteQuarantined {
+		if stats.NextProbeAt.IsZero() {
+			stats.NextProbeAt = stats.CooldownUntil
+			if stats.NextProbeAt.IsZero() {
+				stats.NextProbeAt = now.Add(time.Duration(cooldownSeconds) * time.Second)
+			}
+			changed = true
+		}
+		if stats.CooldownUntil != stats.NextProbeAt {
+			stats.CooldownUntil = stats.NextProbeAt
+			changed = true
+		}
+		return changed
+	}
+	failed := stats.LastError != "" || (stats.LastCheckStatus != "" && stats.LastCheckStatus != "ok") || !stats.CooldownUntil.IsZero()
+	if !failed {
+		stats.RouteStatus = RouteHealthy
+		return true
+	}
+	stats.RouteStatus = RouteQuarantined
+	stats.NextProbeAt = stats.CooldownUntil
+	if stats.NextProbeAt.IsZero() {
+		stats.NextProbeAt = now.Add(time.Duration(cooldownSeconds) * time.Second)
+	}
+	stats.CooldownUntil = stats.NextProbeAt
+	return true
 }
 
 func (m *Manager) hasKeyLocked(name string) bool {

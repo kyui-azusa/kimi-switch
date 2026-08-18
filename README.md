@@ -16,7 +16,7 @@ Its desktop information architecture, visual tokens, and selected UI wrappers ar
 - Puts rate-limited keys into a cooldown window.
 - Provides per-account and test-all availability checks using a one-output-token completion, so authentication-only success cannot hide an exhausted quota.
 - Classifies observed failures as exhausted quota, temporary rate limit, invalid key, disabled account, network failure, or upstream failure using HTTP status, provider error type, and message text.
-- Quarantines failed accounts for at least 10 minutes. Healthy accounts are always preferred; a cooled account is retried only when no enabled healthy account remains.
+- Quarantines failed accounts for at least 10 minutes. A cooldown expiry only makes an account eligible for an independent one-output-token recovery probe; it never puts the account directly back into routing. Healthy accounts are always preferred, and when no healthy account exists the proxy runs controlled probes before returning an unavailable response.
 - Records per-key and per-day request, success, error, input, output, cache-read, reasoning, observed-total, and estimated-token statistics.
 - Provides a separate Kimi Code direct/KimiSwitch takeover switch. Takeover changes only model-provider routing, preserves the original provider, creates `~/.kimi-code/config.toml.kimiswitch.bak`, and can restore direct mode atomically.
 - Does not scrape undocumented quota pages, spoof the client identity, or claim that locally observed usage is an account's remaining quota.

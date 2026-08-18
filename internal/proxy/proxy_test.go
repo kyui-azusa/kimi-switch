@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -318,5 +320,147 @@ func TestDeleteActiveKeyPersistsToIsolatedConfigAndSelectsNext(t *testing.T) {
 	}
 	if len(persisted.Keys) != 1 || persisted.Keys[0].Name != "b" || persisted.ActiveKey != "b" {
 		t.Fatalf("unexpected persisted config: %+v", persisted)
+	}
+}
+
+func TestRecoveryProbeSingleFlightAndNormalRequestSeparation(t *testing.T) {
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	var normalCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		if payload["max_tokens"] == float64(1) {
+			if probeCalls.Add(1) == 1 {
+				close(probeStarted)
+			}
+			<-releaseProbe
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`))
+			return
+		}
+		normalCalls.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+	}))
+	defer upstream.Close()
+
+	temp := t.TempDir()
+	past := time.Now().UTC().Add(-time.Second)
+	stateBytes, err := json.Marshal(rotation.State{Keys: map[string]rotation.Stats{
+		"only": {RouteStatus: rotation.RouteQuarantined, NextProbeAt: past, CooldownUntil: past, LastCheckStatus: "quota_exhausted"},
+	}, Daily: map[string]map[string]rotation.DailyUsage{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(temp, "state.json")
+	if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.ActiveKey = "only"
+	c.Keys = []config.KeyConfig{{Name: "only", Enabled: true, APIKey: "account-key"}}
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+
+	request := func() (*http.Response, error) {
+		req, err := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"model":"kimi-for-coding","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer local")
+		return http.DefaultClient.Do(req)
+	}
+	firstResult := make(chan *http.Response, 1)
+	firstError := make(chan error, 1)
+	go func() {
+		response, err := request()
+		firstResult <- response
+		firstError <- err
+	}()
+	select {
+	case <-probeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("controlled recovery probe did not start")
+	}
+	const concurrent = 5
+	responses := make(chan *http.Response, concurrent)
+	errorsCh := make(chan error, concurrent)
+	for i := 0; i < concurrent; i++ {
+		go func() {
+			response, err := request()
+			responses <- response
+			errorsCh <- err
+		}()
+	}
+	for i := 0; i < concurrent; i++ {
+		response := <-responses
+		if response == nil {
+			t.Fatalf("concurrent request failed: %v", <-errorsCh)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("concurrent request status = %d, want 503", response.StatusCode)
+		}
+		if err := <-errorsCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(releaseProbe)
+	response := <-firstResult
+	if err := <-firstError; err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("request after successful probe status = %d", response.StatusCode)
+	}
+	if probeCalls.Load() != 1 || normalCalls.Load() != 1 {
+		t.Fatalf("probe calls=%d normal calls=%d, want one each", probeCalls.Load(), normalCalls.Load())
+	}
+}
+
+func TestNoHealthyAccountDoesNotForwardUserRequestWhenNoProbeDue(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+	temp := t.TempDir()
+	future := time.Now().UTC().Add(10 * time.Minute)
+	stateBytes, _ := json.Marshal(rotation.State{Keys: map[string]rotation.Stats{
+		"only": {RouteStatus: rotation.RouteQuarantined, NextProbeAt: future, CooldownUntil: future},
+	}, Daily: map[string]map[string]rotation.DailyUsage{}})
+	statePath := filepath.Join(temp, "state.json")
+	if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.ActiveKey = "only"
+	c.Keys = []config.KeyConfig{{Name: "only", Enabled: true, APIKey: "account-key"}}
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+	req, _ := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"model":"kimi-for-coding"}`))
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || calls.Load() != 0 {
+		t.Fatalf("status=%d upstream calls=%d, want 503 and no upstream request", response.StatusCode, calls.Load())
 	}
 }
