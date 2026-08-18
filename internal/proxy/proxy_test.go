@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -318,5 +320,138 @@ func TestDeleteActiveKeyPersistsToIsolatedConfigAndSelectsNext(t *testing.T) {
 	}
 	if len(persisted.Keys) != 1 || persisted.Keys[0].Name != "b" || persisted.ActiveKey != "b" {
 		t.Fatalf("unexpected persisted config: %+v", persisted)
+	}
+}
+
+func TestResolveAPIKeyPrefersKeychainWhenAvailable(t *testing.T) {
+	originalRead := secretRead
+	defer func() { secretRead = originalRead }()
+	secretRead = func(string) (string, error) { return "from-keychain", nil }
+
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", SecretRef: "kimi-switch/work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-keychain" {
+		t.Fatalf("api key = %q, want from-keychain", got)
+	}
+}
+
+func TestResolveAPIKeyFallsBackToLocalCopyWhenKeychainFails(t *testing.T) {
+	originalRead := secretRead
+	defer func() { secretRead = originalRead }()
+	secretRead = func(string) (string, error) { return "", errors.New("broken pipe") }
+
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", SecretRef: "kimi-switch/work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-local" {
+		t.Fatalf("api key = %q, want from-local", got)
+	}
+}
+
+func TestResolveAPIKeySupportsLocalOnlyConfig(t *testing.T) {
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-local" {
+		t.Fatalf("api key = %q, want from-local", got)
+	}
+}
+
+func TestPublicConfigMarksKeychainLocalFallbackWithoutLeakingAPIKey(t *testing.T) {
+	public := publicConfig(config.Config{
+		Keys: []config.KeyConfig{
+			{Name: "work", SecretRef: "kimi-switch/work", APIKey: "secret-value", Enabled: true},
+			{Name: "env", APIKeyEnv: "KIMI_ENV", Enabled: true},
+			{Name: "local", APIKey: "local-only", Enabled: true},
+		},
+	})
+	keysAny, ok := public["keys"].([]map[string]any)
+	if !ok || len(keysAny) != 3 {
+		t.Fatalf("unexpected public keys payload: %#v", public["keys"])
+	}
+	if keysAny[0]["source"] != "keychain+local" || keysAny[1]["source"] != "environment" || keysAny[2]["source"] != "inline" {
+		t.Fatalf("unexpected sources: %#v", keysAny)
+	}
+	if _, ok := keysAny[0]["api_key"]; ok {
+		t.Fatal("public config leaked api_key")
+	}
+}
+
+func TestHandleKeyUpsertStoresKeychainAndLocalFallback(t *testing.T) {
+	originalWrite := secretWrite
+	defer func() { secretWrite = originalWrite }()
+	writes := map[string]string{}
+	secretWrite = func(service, value string) error {
+		writes[service] = value
+		return nil
+	}
+
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	manager, err := rotation.NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	body := `{"name":"tyx","account":"tyx","api_key":"sk-123","enabled":true}`
+	request := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer local")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if writes["kimi-switch/tyx"] != "sk-123" {
+		t.Fatalf("keychain writes = %#v", writes)
+	}
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Keys) != 1 || persisted.Keys[0].SecretRef != "kimi-switch/tyx" || persisted.Keys[0].APIKey != "sk-123" {
+		t.Fatalf("unexpected persisted key: %+v", persisted.Keys)
+	}
+}
+
+func TestHandleKimiImportStoresKeychainAndLocalFallback(t *testing.T) {
+	originalWrite := secretWrite
+	defer func() { secretWrite = originalWrite }()
+	secretWrite = func(string, string) error { return nil }
+
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	manager, err := rotation.NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	kimiConfig := filepath.Join(temp, "kimi.toml")
+	if err := os.WriteFile(kimiConfig, []byte("[providers.work]\napi_key = \"sk-imported\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"path":"` + kimiConfig + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/import/kimi", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer local")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Keys) != 1 || persisted.Keys[0].SecretRef != "kimi-switch/work" || persisted.Keys[0].APIKey != "sk-imported" {
+		t.Fatalf("unexpected persisted key: %+v", persisted.Keys)
 	}
 }

@@ -15,7 +15,7 @@ export interface KeyConfig {
   notes: string;
   enabled: boolean;
   created_at: number;
-  source: "keychain" | "environment" | "inline";
+  source: "keychain" | "keychain+local" | "environment" | "inline";
   api_key_env: string;
   api_key_set: boolean;
 }

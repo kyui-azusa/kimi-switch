@@ -230,7 +230,7 @@ func importKimi(args []string) error {
 		if err := secret.Write(service, apiKey); err != nil {
 			return fmt.Errorf("store provider %q in Keychain: %w", name, err)
 		}
-		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, Enabled: true}
+		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, APIKey: apiKey, Enabled: true}
 		replaced := false
 		for i := range c.Keys {
 			if c.Keys[i].Name == name {
