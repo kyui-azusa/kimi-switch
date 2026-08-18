@@ -58,6 +58,7 @@ export interface TakeoverStatus {
   original_provider?: string;
   affected_models: number;
   reload_required: boolean;
+  config_error?: string;
   error?: string;
 }
 
