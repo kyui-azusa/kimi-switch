@@ -123,11 +123,20 @@ func (m *Manager) Save() error {
 func (m *Manager) SetActive(name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.hasKeyLocked(name) {
+	index := m.keyIndexLocked(name)
+	if index < 0 {
 		return fmt.Errorf("unknown key %q", name)
 	}
+	originalCfg := m.cfg
+	originalState := cloneState(m.state)
+	m.cfg.Keys[index].Enabled = true
 	m.preferKeyLocked(name)
-	return m.persistLocked()
+	if err := m.persistLocked(); err != nil {
+		m.cfg = originalCfg
+		m.state = originalState
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) SetRotation(enabled bool, mode string) error {
@@ -232,11 +241,18 @@ func (m *Manager) SetKeyEnabled(name string, enabled bool) error {
 	defer m.mu.Unlock()
 	for i := range m.cfg.Keys {
 		if m.cfg.Keys[i].Name == name {
+			originalCfg := m.cfg
+			originalState := cloneState(m.state)
 			m.cfg.Keys[i].Enabled = enabled
 			if enabled {
 				m.preferKeyLocked(name)
 			}
-			return m.persistLocked()
+			if err := m.persistLocked(); err != nil {
+				m.cfg = originalCfg
+				m.state = originalState
+				return err
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("unknown key %q", name)
@@ -489,8 +505,12 @@ func (m *Manager) selectStickyLocked(allowCooldown bool) (string, error) {
 			continue
 		}
 		if key.Name != m.cfg.ActiveKey {
+			originalCfg := m.cfg
+			originalState := cloneState(m.state)
 			m.preferKeyLocked(key.Name)
 			if err := config.Save(m.configPath, m.cfg); err != nil {
+				m.cfg = originalCfg
+				m.state = originalState
 				return "", err
 			}
 		}
@@ -537,12 +557,25 @@ func (m *Manager) hasKeyLocked(name string) bool {
 }
 
 func (m *Manager) keyLocked(name string) (config.KeyConfig, bool) {
-	for _, k := range m.cfg.Keys {
-		if k.Name == name {
-			return k, true
-		}
+	index := m.keyIndexLocked(name)
+	if index >= 0 {
+		return m.cfg.Keys[index], true
 	}
 	return config.KeyConfig{}, false
+}
+
+func (m *Manager) keyIndexLocked(name string) int {
+	for _, k := range m.cfg.Keys {
+		if k.Name == name {
+			break
+		}
+	}
+	for i := range m.cfg.Keys {
+		if m.cfg.Keys[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Manager) persistLocked() error {
