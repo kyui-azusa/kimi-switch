@@ -61,7 +61,18 @@ function sourceLabel(key: KeyConfig) {
 
 function statusOf(key: KeyConfig, stats: KeyStats) {
   if (!key.enabled) return { label: "未参与轮换", color: "bg-gray-400", text: "text-gray-500" };
-  const cooldownMinutes = stats.cooldown_until ? Math.max(1, Math.ceil((new Date(stats.cooldown_until).getTime() - Date.now()) / 60000)) : 0;
+  const nextProbe = stats.next_probe_at || stats.cooldown_until;
+  const nextProbeTime = nextProbe ? new Date(nextProbe).getTime() : 0;
+  const cooldownMinutes = nextProbeTime ? Math.max(1, Math.ceil((nextProbeTime - Date.now()) / 60000)) : 0;
+  if (stats.route_status === "probing") return { label: "复测中", color: "bg-blue-500", text: "text-blue-600" };
+  if (stats.route_status === "quarantined") {
+    if (stats.last_probe_at && stats.last_probe_status && stats.last_probe_status !== "ok") {
+      if (nextProbeTime > Date.now()) return { label: `仍不可用 · ${cooldownMinutes} 分钟后复测`, color: "bg-red-500", text: "text-red-600" };
+      return { label: "待复测", color: "bg-blue-500", text: "text-blue-600" };
+    }
+    if (nextProbeTime > Date.now()) return { label: `冷却中 · ${cooldownMinutes} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
+    return { label: "待复测", color: "bg-blue-500", text: "text-blue-600" };
+  }
   if (stats.last_check_status === "quota_exhausted") return { label: "额度用尽", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "invalid_key") return { label: "Key 无效", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "account_disabled") return { label: "账号异常", color: "bg-red-500", text: "text-red-600" };
@@ -69,10 +80,11 @@ function statusOf(key: KeyConfig, stats: KeyStats) {
   if (stats.last_check_status === "rate_limited") return { label: `限流冷却 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
   if (stats.last_check_status === "network_error") return { label: `网络失败 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
   if (stats.last_check_status === "upstream_error") return { label: `上游异常 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
-  if (stats.cooldown_until && new Date(stats.cooldown_until).getTime() > Date.now()) {
+  if (nextProbeTime > Date.now()) {
     return { label: `冷却中 · ${cooldownMinutes} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
   }
   if (stats.last_error) return { label: "最近失败", color: "bg-red-500", text: "text-red-500" };
+  if (stats.last_recovered_at) return { label: `已恢复 · ${stats.last_check_ms || 0} ms`, color: "bg-emerald-500", text: "text-emerald-600" };
   if (stats.last_check_status === "ok") return { label: `连通 · ${stats.last_check_ms || 0} ms`, color: "bg-emerald-500", text: "text-emerald-600" };
   return { label: "可用", color: "bg-emerald-500", text: "text-emerald-600" };
 }
@@ -370,6 +382,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
   onAction: (action: AccountAction, item: KeyConfig) => void;
 }) {
   const state = statusOf(item, stats);
+  const routable = !stats.route_status || stats.route_status === "healthy";
   return (
     <article className={cn("group relative overflow-hidden rounded-xl border border-border bg-card p-4 text-card-foreground transition-all duration-300 hover:border-blue-500/40 hover:shadow-sm", active && "border-blue-500/60 shadow-sm shadow-blue-500/10", !item.enabled && "opacity-65")}>
       <div className={cn("pointer-events-none absolute inset-0 bg-gradient-to-r from-blue-500/10 to-transparent transition-opacity", active ? "opacity-100" : "opacity-0")} />
@@ -378,7 +391,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
           <span className="-ml-1.5 p-1.5 text-muted-foreground/40"><GripVertical className="h-4 w-4" /></span>
           <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-blue-500 transition-transform group-hover:scale-105"><KeyRound className="h-5 w-5" /></div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2"><h3 className="truncate text-base font-semibold">{item.name}</h3>{active && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前</span>}{rotationEnabled && item.enabled && <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">轮换池</span>}</div>
+              <div className="flex items-center gap-2"><h3 className="truncate text-base font-semibold">{item.name}</h3>{active && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前</span>}{rotationEnabled && item.enabled && routable && <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">轮换池</span>}</div>
             <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className={cn("h-1.5 w-1.5 flex-shrink-0 rounded-full", state.color)} /><span className={state.text}>{state.label}</span><span>·</span><span className="truncate">{item.account || sourceLabel(item)}</span></div>
             {(item.notes || stats.last_error) && <p className={cn("mt-1 max-w-lg truncate text-xs", stats.last_error ? "text-red-500/85" : "text-muted-foreground")} title={stats.last_error || item.notes}>{stats.last_error || item.notes}</p>}
           </div>
@@ -389,7 +402,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">失败</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.failures)}</div></div>
         </div>
         <div className="flex flex-shrink-0 items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
-          <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
+          <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled || !routable} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
           <Button size="icon" variant="ghost" title="真实可用性测试（发送最多 1 个输出 Token）" disabled={testing} onClick={() => onAction("test", item)}><RadioTower className={cn("h-4 w-4", testing && "animate-pulse text-blue-500")} /></Button>
           <Button size="icon" variant="ghost" title="编辑" onClick={() => onAction("edit", item)}><Edit3 className="h-4 w-4" /></Button>
           <Button size="icon" variant="ghost" title="复制" onClick={() => onAction("duplicate", item)}><Copy className="h-4 w-4" /></Button>

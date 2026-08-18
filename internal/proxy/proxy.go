@@ -245,17 +245,21 @@ type ConnectivityResult struct {
 
 func (s *Server) testConnectivity(parent context.Context, name string) ConnectivityResult {
 	result := ConnectivityResult{Name: name, Status: "failed", TestedAt: time.Now().UTC()}
-	var key config.KeyConfig
-	for _, candidate := range s.manager.Config().Keys {
-		if candidate.Name == name {
-			key = candidate
-			break
-		}
-	}
-	if key.Name == "" {
-		result.Message = "账号不存在"
+	key, err := s.manager.BeginProbe(name, false)
+	if errors.Is(err, rotation.ErrProbeInProgress) {
+		result.Status = "probing"
+		result.Message = "账号正在复测"
 		return result
 	}
+	if err != nil {
+		result.Message = err.Error()
+		return result
+	}
+	return s.runConnectivity(parent, key)
+}
+
+func (s *Server) runConnectivity(parent context.Context, key config.KeyConfig) ConnectivityResult {
+	result := ConnectivityResult{Name: key.Name, Status: "failed", TestedAt: time.Now().UTC()}
 
 	started := time.Now()
 	apiKey, err := resolveAPIKey(key)
@@ -263,14 +267,14 @@ func (s *Server) testConnectivity(parent context.Context, name string) Connectiv
 		result.LatencyMS = time.Since(started).Milliseconds()
 		result.Status = "invalid_key"
 		result.Message = err.Error()
-		_ = s.manager.RecordConnectivity(name, result.Status, time.Since(started), result.Message)
+		_ = s.manager.RecordConnectivity(key.Name, result.Status, time.Since(started), result.Message)
 		return result
 	}
 	endpoint, err := buildUpstreamURL(s.manager.Config().UpstreamBaseURL, "/v1/chat/completions", "")
 	if err != nil {
 		result.LatencyMS = time.Since(started).Milliseconds()
 		result.Message = err.Error()
-		_ = s.manager.RecordConnectivity(name, result.Status, time.Since(started), result.Message)
+		_ = s.manager.RecordConnectivity(key.Name, result.Status, time.Since(started), result.Message)
 		return result
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -290,7 +294,7 @@ func (s *Server) testConnectivity(parent context.Context, name string) Connectiv
 	if err != nil {
 		result.LatencyMS = time.Since(started).Milliseconds()
 		result.Message = err.Error()
-		_ = s.manager.RecordConnectivity(name, result.Status, time.Since(started), result.Message)
+		_ = s.manager.RecordConnectivity(key.Name, result.Status, time.Since(started), result.Message)
 		return result
 	}
 	response, err := s.client.Do(request)
@@ -299,7 +303,7 @@ func (s *Server) testConnectivity(parent context.Context, name string) Connectiv
 	if err != nil {
 		result.Status = "network_error"
 		result.Message = err.Error()
-		_ = s.manager.RecordConnectivity(name, result.Status, latency, result.Message)
+		_ = s.manager.RecordConnectivity(key.Name, result.Status, latency, result.Message)
 		return result
 	}
 	defer response.Body.Close()
@@ -312,7 +316,7 @@ func (s *Server) testConnectivity(parent context.Context, name string) Connectiv
 	} else {
 		result.Status, result.Message = classifyProviderFailure(response.StatusCode, body)
 	}
-	_ = s.manager.RecordConnectivity(name, result.Status, latency, result.Message)
+	_ = s.manager.RecordConnectivity(key.Name, result.Status, latency, result.Message)
 	return result
 }
 
@@ -505,6 +509,36 @@ func decodeJSON(r *http.Request, value any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(value)
 }
 
+// triggerDueProbes keeps recovery work independent from the user's request.
+// It is safe to call on every request because BeginDueProbe is atomic.
+func (s *Server) triggerDueProbes() {
+	for {
+		key, ok := s.manager.BeginDueProbe()
+		if !ok {
+			return
+		}
+		go func(key config.KeyConfig) {
+			_ = s.runConnectivity(context.Background(), key)
+		}(key)
+	}
+}
+
+// probeDueAccounts is used only when no healthy account exists. It probes due
+// quarantined accounts under the control of the proxy, never by forwarding the
+// user's request as a probe.
+func (s *Server) probeDueAccounts(ctx context.Context) {
+	for s.manager.AvailableKeyCount() == 0 {
+		key, ok := s.manager.BeginDueProbe()
+		if !ok {
+			return
+		}
+		result := s.runConnectivity(ctx, key)
+		if result.OK {
+			return
+		}
+	}
+}
+
 func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxResponseBytes))
 	if err != nil {
@@ -516,6 +550,11 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	maxAttempts := 1
 	if s.manager.Config().Rotation.Enabled {
 		maxAttempts = s.manager.Config().Rotation.MaxAttempts
+	}
+	if s.manager.AvailableKeyCount() == 0 {
+		s.probeDueAccounts(r.Context())
+	} else {
+		s.triggerDueProbes()
 	}
 	var lastStatus int
 	var lastHeaders http.Header

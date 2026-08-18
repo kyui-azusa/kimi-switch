@@ -262,9 +262,20 @@ func showStatus(path string) error {
 	}
 	for _, key := range c.Keys {
 		stats := state.Keys[key.Name]
-		cooldown := "ready"
-		if !stats.CooldownUntil.IsZero() && time.Now().UTC().Before(stats.CooldownUntil) {
-			cooldown = "cooldown until " + stats.CooldownUntil.Local().Format(time.RFC3339)
+		cooldown := "healthy"
+		switch stats.RouteStatus {
+		case rotation.RouteProbing:
+			cooldown = "probing"
+		case rotation.RouteQuarantined:
+			probeAt := stats.NextProbeAt
+			if probeAt.IsZero() {
+				probeAt = stats.CooldownUntil
+			}
+			if !probeAt.IsZero() && time.Now().UTC().Before(probeAt) {
+				cooldown = "cooldown until " + probeAt.Local().Format(time.RFC3339)
+			} else {
+				cooldown = "probe due"
+			}
 		}
 		marker := " "
 		if key.Name == c.ActiveKey {

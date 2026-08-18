@@ -1,6 +1,9 @@
 package rotation
 
 import (
+	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -114,7 +117,7 @@ func TestCooldownExcludesRateLimitedKey(t *testing.T) {
 	}
 }
 
-func TestCooldownFallsBackOnlyWhenEveryKeyIsUnavailable(t *testing.T) {
+func TestCooldownDoesNotFallbackWhenEveryKeyIsUnavailable(t *testing.T) {
 	c := config.Default()
 	c.Keys = []config.KeyConfig{
 		{Name: "a", Enabled: true, APIKey: "a"},
@@ -129,12 +132,155 @@ func TestCooldownFallsBackOnlyWhenEveryKeyIsUnavailable(t *testing.T) {
 	}
 	manager.MarkCooldown("a", "failed")
 	manager.MarkCooldown("b", "failed")
-	selected, err := manager.Select(10, 1)
-	if err != nil {
-		t.Fatalf("all-cooled fallback returned error: %v", err)
+	if _, err := manager.Select(10, 1); err == nil {
+		t.Fatal("selected a quarantined account without a recovery probe")
 	}
-	if selected.Key.Name != "a" && selected.Key.Name != "b" {
-		t.Fatalf("unexpected fallback key %q", selected.Key.Name)
+}
+
+func TestCooldownExpiryStillRequiresRecoveryProbe(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("a", "quota exhausted")
+	manager.mu.Lock()
+	stats := manager.state.Keys["a"]
+	stats.NextProbeAt = time.Now().UTC().Add(-time.Second)
+	stats.CooldownUntil = stats.NextProbeAt
+	manager.state.Keys["a"] = stats
+	manager.mu.Unlock()
+	if _, err := manager.Select(0, 1); err == nil {
+		t.Fatal("selected an account whose cooldown expired but was not probed")
+	}
+	if _, ok := manager.BeginDueProbe(); !ok {
+		t.Fatal("expired quarantine was not eligible for a controlled probe")
+	}
+}
+
+func TestRecoveryProbeSuccessRestoresRouting(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("a", "quota exhausted")
+	manager.mu.Lock()
+	stats := manager.state.Keys["a"]
+	stats.NextProbeAt = time.Now().UTC().Add(-time.Second)
+	stats.CooldownUntil = stats.NextProbeAt
+	manager.state.Keys["a"] = stats
+	manager.mu.Unlock()
+	key, ok := manager.BeginDueProbe()
+	if !ok {
+		t.Fatal("expected a due probe")
+	}
+	if err := manager.RecordConnectivity(key.Name, "ok", 10*time.Millisecond, ""); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.Select(0, 1)
+	if err != nil || selected.Key.Name != "a" {
+		t.Fatalf("recovered account was not selectable: %+v, %v", selected, err)
+	}
+	_, state := manager.Snapshot()
+	if state.Keys["a"].RouteStatus != RouteHealthy || state.Keys["a"].LastRecoveredAt.IsZero() {
+		t.Fatalf("unexpected recovered state: %+v", state.Keys["a"])
+	}
+}
+
+func TestRecoveryProbeFailureKeepsQuarantineAndDelaysNextProbe(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("a", "quota exhausted")
+	manager.mu.Lock()
+	stats := manager.state.Keys["a"]
+	stats.NextProbeAt = time.Now().UTC().Add(-time.Second)
+	stats.CooldownUntil = stats.NextProbeAt
+	manager.state.Keys["a"] = stats
+	manager.mu.Unlock()
+	key, ok := manager.BeginDueProbe()
+	if !ok {
+		t.Fatal("expected a due probe")
+	}
+	if err := manager.RecordConnectivity(key.Name, "quota_exhausted", 10*time.Millisecond, "still exhausted"); err != nil {
+		t.Fatal(err)
+	}
+	_, state := manager.Snapshot()
+	stats = state.Keys["a"]
+	if stats.RouteStatus != RouteQuarantined || !stats.NextProbeAt.After(time.Now().UTC().Add(9*time.Minute+55*time.Second)) {
+		t.Fatalf("probe failure did not keep quarantine: %+v", stats)
+	}
+	if _, err := manager.Select(0, 1); err == nil {
+		t.Fatal("failed recovery probe returned account to routing")
+	}
+}
+
+func TestRecoveryProbeIsSingleFlightPerAccount(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.MarkCooldown("a", "quota exhausted")
+	manager.mu.Lock()
+	stats := manager.state.Keys["a"]
+	stats.NextProbeAt = time.Now().UTC().Add(-time.Second)
+	stats.CooldownUntil = stats.NextProbeAt
+	manager.state.Keys["a"] = stats
+	manager.mu.Unlock()
+	if _, ok := manager.BeginDueProbe(); !ok {
+		t.Fatal("expected first due probe")
+	}
+	if _, ok := manager.BeginDueProbe(); ok {
+		t.Fatal("reserved account twice for concurrent probes")
+	}
+	if _, err := manager.BeginProbe("a", false); !errors.Is(err, ErrProbeInProgress) {
+		t.Fatalf("manual probe did not observe in-flight recovery probe: %v", err)
+	}
+}
+
+func TestLegacyCooldownStateMigratesToQuarantineProbeState(t *testing.T) {
+	temp := t.TempDir()
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "legacy", Enabled: true, APIKey: "legacy"}}
+	c.ActiveKey = "legacy"
+	past := time.Now().UTC().Add(-time.Second)
+	statePath := filepath.Join(temp, "state.json")
+	b, err := json.Marshal(State{Keys: map[string]Stats{
+		"legacy": {CooldownUntil: past, LastError: "quota exhausted", LastCheckStatus: "quota_exhausted"},
+	}, Daily: map[string]map[string]DailyUsage{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state := manager.Snapshot()
+	stats := state.Keys["legacy"]
+	if stats.RouteStatus != RouteQuarantined || !stats.NextProbeAt.Equal(past) {
+		t.Fatalf("legacy state was not migrated: %+v", stats)
+	}
+	if _, err := manager.Select(0, 1); err == nil {
+		t.Fatal("legacy quarantined account became selectable during migration")
 	}
 }
 
