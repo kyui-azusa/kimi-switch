@@ -20,6 +20,22 @@ function run(command, args, options = {}) {
   return execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], ...options });
 }
 
+function detachDisk() {
+  for (const delaySeconds of [0, 1, 2, 4, 8]) {
+    if (delaySeconds) run("sleep", [String(delaySeconds)]);
+    try {
+      run("hdiutil", ["detach", device], { stdio: ["ignore", "pipe", "pipe"] });
+      device = "";
+      return;
+    } catch (error) {
+      if (error?.status !== 16) throw error;
+    }
+  }
+
+  run("hdiutil", ["detach", device]);
+  device = "";
+}
+
 function writeLayout(volumeName) {
   const appleScript = String.raw`
 on run argv
@@ -82,15 +98,14 @@ try {
   if (!existsSync(storePath)) throw new Error("Finder did not write the DMG .DS_Store layout");
   run("sync", []);
 
-  run("hdiutil", ["detach", device]);
-  device = "";
+  detachDisk();
   run("hdiutil", ["convert", readWritePath, "-format", "UDZO", "-imagekey", "zlib-level=9", "-o", repairedPath]);
   renameSync(repairedPath, dmgPath);
   process.stdout.write(`Repaired DMG presentation: ${dmgPath}\n`);
 } finally {
   if (device) {
     try {
-      run("hdiutil", ["detach", device]);
+      detachDisk();
     } catch {
       // Preserve the original failure while still attempting to detach.
     }
