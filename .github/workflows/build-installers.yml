@@ -87,6 +87,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
+      - name: Repair macOS DMG presentation
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          node scripts/repair-dmg-presentation.mjs "${dmgs[0]}"
+
       - name: Validate macOS DMG presentation
         if: runner.os == 'macOS'
         shell: bash
