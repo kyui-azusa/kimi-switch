@@ -3,7 +3,7 @@ const LOCAL_KEY = "local-kimi-switch";
 
 export interface RotationConfig {
   enabled: boolean;
-  mode: "request" | "token";
+  mode: "sticky";
   max_attempts: number;
   cooldown_seconds: number;
   retry_rate_limited: boolean;
