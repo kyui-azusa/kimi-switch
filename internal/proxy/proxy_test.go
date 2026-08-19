@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kyui-azusa/kimi-switch/internal/config"
+	"github.com/kyui-azusa/kimi-switch/internal/kimitakeover"
 	"github.com/kyui-azusa/kimi-switch/internal/rotation"
 )
 
@@ -179,6 +180,73 @@ func TestDesktopCORS(t *testing.T) {
 	server.ServeHTTP(response, request)
 	if response.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatal("unexpected CORS permission for an external origin")
+	}
+}
+
+func TestStatusAutoRepairsDuplicateTakeoverProvider(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	broken := `default_model = "kimi-code/k3-256k"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+api_key = "secret"
+base_url = "https://api.kimi.com/coding/v1"
+
+[providers.kimi-switch-local]
+type = "kimi"
+api_key = "local"
+base_url = "http://127.0.0.1:15722/v1"
+
+[models."kimi-code/k3-256k"]
+provider = "kimi-switch-local"
+model = "k3-256k"
+max_context_size = 262144
+
+# >>> KimiSwitch managed provider
+# original_provider = "managed:kimi-code"
+[providers."kimi-switch-local"]
+type = "kimi"
+api_key = "local"
+base_url = "http://127.0.0.1:15722/v1"
+# <<< KimiSwitch managed provider
+`
+	configPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	status, err := kimitakeover.Inspect(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfigError != "" || !status.Enabled {
+		t.Fatalf("takeover was not repaired: %+v", status)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(content), "[providers."); got != 2 {
+		t.Fatalf("provider table count = %d, config:\n%s", got, content)
 	}
 }
 

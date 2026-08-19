@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kyui-azusa/kimi-switch/internal/config"
@@ -29,8 +30,9 @@ var (
 )
 
 type Server struct {
-	manager *rotation.Manager
-	client  *http.Client
+	manager    *rotation.Manager
+	client     *http.Client
+	takeoverMu sync.Mutex
 }
 
 func NewServer(manager *rotation.Manager) *Server {
@@ -106,10 +108,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/status":
 		c, state := s.manager.Snapshot()
-		takeover, err := kimitakeover.Inspect(kimitakeover.DefaultPath())
-		if err != nil {
-			takeover.Error = err.Error()
-		}
+		takeover := s.takeoverStatus(c)
 		writeJSON(w, http.StatusOK, map[string]any{"config": publicConfig(c), "keys": state.Keys, "kimi_takeover": takeover})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/usage":
 		_, state := s.manager.Snapshot()
@@ -155,7 +154,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c := s.manager.Config()
+		s.takeoverMu.Lock()
 		status, err := kimitakeover.Set(kimitakeover.DefaultPath(), c.ListenAddr, c.LocalAPIKey, input.Enabled)
+		s.takeoverMu.Unlock()
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -236,6 +237,31 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown admin endpoint"})
 	}
+}
+
+func (s *Server) takeoverStatus(c config.Config) kimitakeover.Status {
+	s.takeoverMu.Lock()
+	defer s.takeoverMu.Unlock()
+
+	path := kimitakeover.DefaultPath()
+	status, err := kimitakeover.Inspect(path)
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	if !status.Enabled || status.ConfigError == "" {
+		return status
+	}
+
+	repaired, err := kimitakeover.Set(path, c.ListenAddr, c.LocalAPIKey, true)
+	if err != nil {
+		status.Error = "automatic config repair failed: " + err.Error()
+		return status
+	}
+	if repaired.ConfigError != "" {
+		repaired.Error = "automatic config repair did not produce a valid config"
+	}
+	return repaired
 }
 
 type ConnectivityResult struct {
