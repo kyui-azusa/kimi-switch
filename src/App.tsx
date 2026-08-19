@@ -489,7 +489,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Token</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.total_tokens || stats.estimated_tokens)}</div></div>
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">失败</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.failures)}</div></div>
         </div>
-        <div className="flex flex-shrink-0 items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
+        <div className="flex flex-shrink-0 items-center gap-1.5 opacity-100 transition-opacity sm:pointer-events-none sm:opacity-0 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:pointer-events-auto sm:group-has-[:focus-visible]:opacity-100">
           <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
           <Button size="icon" variant="ghost" title="真实可用性测试（发送最多 1 个输出 Token）" disabled={testing} onClick={() => onAction("test", item)}><RadioTower className={cn("h-4 w-4", testing && "animate-pulse text-blue-500")} /></Button>
           <Button size="icon" variant="ghost" title="编辑" onClick={() => onAction("edit", item)}><Edit3 className="h-4 w-4" /></Button>
