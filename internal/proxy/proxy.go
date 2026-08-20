@@ -108,7 +108,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/status":
 		c, state := s.manager.Snapshot()
-		takeover := s.takeoverStatus(c)
+		takeover := s.takeoverStatus()
 		writeJSON(w, http.StatusOK, map[string]any{"config": publicConfig(c), "keys": state.Keys, "kimi_takeover": takeover})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/usage":
 		_, state := s.manager.Snapshot()
@@ -156,6 +156,11 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		c := s.manager.Config()
 		s.takeoverMu.Lock()
 		status, err := kimitakeover.Set(kimitakeover.DefaultPath(), c.ListenAddr, c.LocalAPIKey, input.Enabled)
+		if err == nil {
+			if persistErr := s.manager.SetTakeoverPreference(input.Enabled); persistErr != nil {
+				err = fmt.Errorf("persist takeover preference: %w", persistErr)
+			}
+		}
 		s.takeoverMu.Unlock()
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -239,23 +244,38 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) takeoverStatus(c config.Config) kimitakeover.Status {
+func (s *Server) takeoverStatus() kimitakeover.Status {
 	s.takeoverMu.Lock()
 	defer s.takeoverMu.Unlock()
 
+	c := s.manager.Config()
 	path := kimitakeover.DefaultPath()
 	status, err := kimitakeover.Inspect(path)
 	if err != nil {
 		status.Error = err.Error()
 		return status
 	}
-	if !status.Enabled || status.ConfigError == "" {
+	desired := c.TakeoverEnabled
+	if desired == nil {
+		migrated := status.Enabled || status.AffectedModels > 0
+		if err := s.manager.SetTakeoverPreference(migrated); err != nil {
+			status.Error = "could not migrate takeover preference: " + err.Error()
+			return status
+		}
+		desired = &migrated
+	}
+
+	healthy := status.ConfigError == "" && status.AffectedModels > 0
+	if *desired && status.Enabled && healthy {
+		return status
+	}
+	if !*desired && !status.Enabled && status.AffectedModels == 0 {
 		return status
 	}
 
-	repaired, err := kimitakeover.Set(path, c.ListenAddr, c.LocalAPIKey, true)
+	repaired, err := kimitakeover.Set(path, c.ListenAddr, c.LocalAPIKey, *desired)
 	if err != nil {
-		status.Error = "automatic config repair failed: " + err.Error()
+		status.Error = "automatic takeover reconciliation failed: " + err.Error()
 		return status
 	}
 	if repaired.ConfigError != "" {

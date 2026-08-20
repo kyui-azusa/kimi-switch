@@ -23,10 +23,12 @@ const (
 // owns routing state here; the optional takeover feature only edits marked
 // provider routing in Kimi's config and can restore the original mapping.
 type Config struct {
-	ListenAddr      string         `json:"listen_addr"`
-	UpstreamBaseURL string         `json:"upstream_base_url"`
-	LocalAPIKey     string         `json:"local_api_key"`
-	ActiveKey       string         `json:"active_key"`
+	ListenAddr      string `json:"listen_addr"`
+	UpstreamBaseURL string `json:"upstream_base_url"`
+	LocalAPIKey     string `json:"local_api_key"`
+	ActiveKey       string `json:"active_key"`
+	// nil identifies an older config whose preference must be migrated from config.toml.
+	TakeoverEnabled *bool          `json:"takeover_enabled,omitempty"`
 	Rotation        RotationConfig `json:"rotation"`
 	Keys            []KeyConfig    `json:"keys"`
 	StatePath       string         `json:"state_path,omitempty"`

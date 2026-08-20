@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,19 @@ import (
 	"github.com/kyui-azusa/kimi-switch/internal/kimitakeover"
 	"github.com/kyui-azusa/kimi-switch/internal/rotation"
 )
+
+const directTakeoverFixture = `default_model = "kimi-code/k3-256k"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+api_key = "secret"
+base_url = "https://api.kimi.com/coding/v1"
+
+[models."kimi-code/k3-256k"]
+provider = "managed:kimi-code"
+model = "k3-256k"
+max_context_size = 262144
+`
 
 func TestBuildUpstreamURLAvoidsDuplicateV1(t *testing.T) {
 	got, err := buildUpstreamURL("https://api.kimi.com/coding/v1", "/v1/chat/completions", "x=1")
@@ -247,6 +261,208 @@ base_url = "http://127.0.0.1:15722/v1"
 	}
 	if got := strings.Count(string(content), "[providers."); got != 2 {
 		t.Fatalf("provider table count = %d, config:\n%s", got, content)
+	}
+}
+
+func TestStatusRestoresDesiredTakeoverAfterExternalConfigRewrite(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	desired := true
+	c.TakeoverEnabled = &desired
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Enabled || status.AffectedModels != 1 || status.ConfigError != "" {
+		t.Fatalf("takeover was not restored after external rewrite: %+v", status)
+	}
+}
+
+func TestStatusMigratesLegacyTakeoverPreference(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	loaded, err := config.Load(appConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TakeoverEnabled == nil || !*loaded.TakeoverEnabled {
+		t.Fatalf("migrated takeover preference = %v", loaded.TakeoverEnabled)
+	}
+}
+
+func TestExplicitDisableRemainsAuthoritative(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true)
+	if err != nil || !managed.Enabled {
+		t.Fatalf("initial takeover failed: status=%+v err=%v", managed, err)
+	}
+	managedContent, err := os.ReadFile(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	desired := false
+	c.TakeoverEnabled = &desired
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetTakeoverPreference(false); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit disable was not applied: %+v", status)
+	}
+
+	if err := os.WriteFile(kimiConfigPath, managedContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := config.Load(appConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := rotation.NewManager(persisted, appConfigPath, filepath.Join(temp, "state-restarted.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server = NewServer(restarted)
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	status, err = kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit disable was lost after restart: %+v", status)
+	}
+}
+
+func TestTakeoverEndpointPersistsUserPreference(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	setTakeover := func(enabled bool) {
+		t.Helper()
+		body := strings.NewReader(fmt.Sprintf(`{"enabled":%t}`, enabled))
+		request := httptest.NewRequest(http.MethodPut, "/api/kimi/takeover", body)
+		request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("set takeover %t: status = %d, body = %s", enabled, response.Code, response.Body.String())
+		}
+		loaded, err := config.Load(appConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.TakeoverEnabled == nil || *loaded.TakeoverEnabled != enabled {
+			t.Fatalf("persisted takeover preference = %v, want %t", loaded.TakeoverEnabled, enabled)
+		}
+	}
+
+	setTakeover(true)
+	setTakeover(false)
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit endpoint disable did not restore direct mode: %+v", status)
 	}
 }
 

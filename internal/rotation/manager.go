@@ -156,6 +156,19 @@ func (m *Manager) SetRotation(enabled bool, mode string) error {
 	return m.persistLocked()
 }
 
+func (m *Manager) SetTakeoverPreference(enabled bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	previous := m.cfg.TakeoverEnabled
+	value := enabled
+	m.cfg.TakeoverEnabled = &value
+	if err := config.Save(m.configPath, m.cfg); err != nil {
+		m.cfg.TakeoverEnabled = previous
+		return err
+	}
+	return nil
+}
+
 func (m *Manager) UpsertKey(originalName string, key config.KeyConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -36,6 +36,26 @@ func TestStickyRotationKeepsUsingActiveKeyOnSuccess(t *testing.T) {
 	}
 }
 
+func TestSetTakeoverPreferencePersists(t *testing.T) {
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	manager, err := NewManager(config.Default(), configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetTakeoverPreference(true); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TakeoverEnabled == nil || !*loaded.TakeoverEnabled {
+		t.Fatalf("persisted takeover preference = %v", loaded.TakeoverEnabled)
+	}
+}
+
 func TestStickyRotationDoesNotSpreadConcurrentRequests(t *testing.T) {
 	c := config.Default()
 	c.Keys = []config.KeyConfig{

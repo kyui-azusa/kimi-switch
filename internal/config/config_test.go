@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,6 +14,29 @@ func TestDefaultListenAddrDoesNotConflictWithCCSwitch(t *testing.T) {
 	}
 	if DefaultListenAddr == LegacyDefaultListenAddr {
 		t.Fatal("KimiSwitch default must not reuse the CC Switch default port")
+	}
+}
+
+func TestEnsurePreservesMissingTakeoverPreferenceForRuntimeMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := []byte(`{"listen_addr":"127.0.0.1:15722","upstream_base_url":"https://api.kimi.com/coding/v1","local_api_key":"local","rotation":{"mode":"sticky"},"keys":[]}`)
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := Ensure(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.TakeoverEnabled != nil {
+		t.Fatalf("takeover preference = %v, want unresolved", *migrated.TakeoverEnabled)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(`"takeover_enabled"`)) {
+		t.Fatalf("legacy preference was resolved before runtime inspection: %s", persisted)
 	}
 }
 

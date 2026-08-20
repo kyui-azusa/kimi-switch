@@ -3,6 +3,7 @@
   "upstream_base_url": "https://api.kimi.com/coding/v1",
   "local_api_key": "local-kimi-switch",
   "active_key": "work",
+  "takeover_enabled": false,
   "rotation": {
     "enabled": false,
     "mode": "sticky",
