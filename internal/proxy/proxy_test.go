@@ -739,3 +739,75 @@ func TestHandleKimiImportStoresKeychainAndLocalFallback(t *testing.T) {
 		t.Fatalf("unexpected persisted key: %+v", persisted.Keys)
 	}
 }
+
+func TestReorderKeysAPIReordersAndPersists(t *testing.T) {
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.ActiveKey = "b"
+	c.Keys = []config.KeyConfig{
+		{Name: "a", Enabled: true, APIKey: "a-key"},
+		{Name: "b", Enabled: true, APIKey: "b-key"},
+		{Name: "c", Enabled: true, APIKey: "c-key"},
+	}
+	manager, err := rotation.NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/keys/reorder", strings.NewReader(`{"names":["c","a","b"]}`))
+	request.Header.Set("Authorization", "Bearer local")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewServer(manager).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := body["ok"].(bool); !ok {
+		t.Fatalf("unexpected body: %+v", body)
+	}
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := []string{persisted.Keys[0].Name, persisted.Keys[1].Name, persisted.Keys[2].Name}
+	if strings.Join(order, ",") != "c,a,b" {
+		t.Fatalf("persisted order = %v", order)
+	}
+	if persisted.ActiveKey != "b" {
+		t.Fatalf("active key = %q, want b", persisted.ActiveKey)
+	}
+}
+
+func TestReorderKeysAPIRejectsInvalidInput(t *testing.T) {
+	temp := t.TempDir()
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.Keys = []config.KeyConfig{
+		{Name: "a", Enabled: true, APIKey: "a-key"},
+		{Name: "b", Enabled: true, APIKey: "b-key"},
+	}
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/keys/reorder", strings.NewReader(`{"names":["a","a"]}`))
+	request.Header.Set("Authorization", "Bearer local")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	NewServer(manager).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(body["error"], `duplicate key "a"`) {
+		t.Fatalf("unexpected body: %+v", body)
+	}
+}
