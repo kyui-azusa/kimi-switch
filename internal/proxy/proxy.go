@@ -395,12 +395,24 @@ func containsAny(value string, terms ...string) bool {
 }
 
 type keyInput struct {
-	Name      string `json:"name"`
-	Account   string `json:"account"`
-	Notes     string `json:"notes"`
-	APIKey    string `json:"api_key"`
-	APIKeyEnv string `json:"api_key_env"`
-	Enabled   bool   `json:"enabled"`
+	Name         string             `json:"name"`
+	Account      string             `json:"account"`
+	Notes        string             `json:"notes"`
+	APIKey       string             `json:"api_key"`
+	APIKeyEnv    string             `json:"api_key_env"`
+	Enabled      bool               `json:"enabled"`
+	QuotaRefresh *quotaRefreshInput `json:"quota_refresh"`
+}
+
+type quotaRefreshInput struct {
+	FiveHour         *quotaRefreshRecordInput `json:"five_hour"`
+	Weekly           *quotaRefreshRecordInput `json:"weekly"`
+	FiveHourAnchorAt *string                  `json:"five_hour_anchor_at"`
+	WeeklyAnchorAt   *string                  `json:"weekly_anchor_at"`
+}
+
+type quotaRefreshRecordInput struct {
+	AnchorAt *string `json:"anchor_at"`
 }
 
 func (s *Server) handleKeyUpsert(w http.ResponseWriter, r *http.Request, originalName string) {
@@ -432,6 +444,16 @@ func (s *Server) handleKeyUpsert(w http.ResponseWriter, r *http.Request, origina
 		CreatedAt: existing.CreatedAt,
 		SecretRef: existing.SecretRef,
 		APIKey:    existing.APIKey,
+	}
+	if input.QuotaRefresh == nil {
+		key.QuotaRefresh = config.CloneQuotaRefresh(existing.QuotaRefresh)
+	} else {
+		quotaRefresh, err := manualQuotaRefreshFromInput(existing.QuotaRefresh, input.QuotaRefresh, time.Now().UTC())
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		key.QuotaRefresh = quotaRefresh
 	}
 	if input.APIKey != "" {
 		service := "kimi-switch/" + input.Name
@@ -484,7 +506,7 @@ func (s *Server) handleKimiImport(w http.ResponseWriter, r *http.Request) {
 		for _, existing := range s.manager.Config().Keys {
 			if existing.Name == name {
 				original = name
-				key.CreatedAt = existing.CreatedAt
+				key = config.MergeImportedKey(existing, key)
 				break
 			}
 		}
@@ -798,6 +820,7 @@ func firstNumber(value map[string]any, names ...string) int64 {
 
 func publicConfig(c config.Config) map[string]any {
 	keys := make([]map[string]any, 0, len(c.Keys))
+	now := time.Now().UTC()
 	for _, key := range c.Keys {
 		source := "inline"
 		if key.SecretRef != "" {
@@ -805,7 +828,7 @@ func publicConfig(c config.Config) map[string]any {
 		} else if key.APIKeyEnv != "" {
 			source = "environment"
 		}
-		keys = append(keys, map[string]any{
+		publicKey := map[string]any{
 			"name":        key.Name,
 			"account":     key.Account,
 			"notes":       key.Notes,
@@ -814,7 +837,11 @@ func publicConfig(c config.Config) map[string]any {
 			"source":      source,
 			"api_key_env": key.APIKeyEnv,
 			"api_key_set": key.APIKey != "" || key.APIKeyEnv != "" || key.SecretRef != "",
-		})
+		}
+		if quotaRefresh := publicQuotaRefresh(key.QuotaRefresh, now); quotaRefresh != nil {
+			publicKey["quota_refresh"] = quotaRefresh
+		}
+		keys = append(keys, publicKey)
 	}
 	return map[string]any{
 		"listen_addr":       c.ListenAddr,
@@ -823,6 +850,114 @@ func publicConfig(c config.Config) map[string]any {
 		"rotation":          c.Rotation,
 		"keys":              keys,
 	}
+}
+
+func manualQuotaRefreshFromInput(existing *config.QuotaRefreshConfig, input *quotaRefreshInput, now time.Time) (*config.QuotaRefreshConfig, error) {
+	current := config.CloneQuotaRefresh(existing)
+	if current == nil {
+		current = &config.QuotaRefreshConfig{}
+	}
+	var err error
+	current.FiveHour, err = manualQuotaRefreshRecord(current.FiveHour, input.fiveHourAnchorAt(), now)
+	if err != nil {
+		return nil, fmt.Errorf("quota_refresh.five_hour.anchor_at: %w", err)
+	}
+	current.Weekly, err = manualQuotaRefreshRecord(current.Weekly, input.weeklyAnchorAt(), now)
+	if err != nil {
+		return nil, fmt.Errorf("quota_refresh.weekly.anchor_at: %w", err)
+	}
+	return config.NormalizeQuotaRefresh(current), nil
+}
+
+func (q *quotaRefreshInput) fiveHourAnchorAt() *string {
+	if q == nil {
+		return nil
+	}
+	if q.FiveHour != nil && q.FiveHour.AnchorAt != nil {
+		return q.FiveHour.AnchorAt
+	}
+	return q.FiveHourAnchorAt
+}
+
+func (q *quotaRefreshInput) weeklyAnchorAt() *string {
+	if q == nil {
+		return nil
+	}
+	if q.Weekly != nil && q.Weekly.AnchorAt != nil {
+		return q.Weekly.AnchorAt
+	}
+	return q.WeeklyAnchorAt
+}
+
+func manualQuotaRefreshRecord(existing *config.QuotaRefreshRecord, raw *string, now time.Time) (*config.QuotaRefreshRecord, error) {
+	if raw == nil {
+		if existing == nil {
+			return nil, nil
+		}
+		record := &config.QuotaRefreshRecord{
+			Source:        existing.Source,
+			Authoritative: existing.Authoritative,
+		}
+		if existing.AnchorAt != nil {
+			anchor := existing.AnchorAt.UTC()
+			record.AnchorAt = &anchor
+		}
+		if existing.RecordedAt != nil {
+			recordedAt := existing.RecordedAt.UTC()
+			record.RecordedAt = &recordedAt
+		}
+		return record, nil
+	}
+	value := strings.TrimSpace(*raw)
+	if value == "" {
+		return nil, nil
+	}
+	anchor, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, err
+	}
+	anchor = anchor.UTC()
+	recordedAt := now.UTC()
+	if existing != nil && existing.AnchorAt != nil && existing.AnchorAt.UTC().Equal(anchor) && existing.RecordedAt != nil {
+		recordedAt = existing.RecordedAt.UTC()
+	}
+	return &config.QuotaRefreshRecord{
+		AnchorAt:      &anchor,
+		Source:        config.QuotaRefreshSourceManual,
+		RecordedAt:    &recordedAt,
+		Authoritative: false,
+	}, nil
+}
+
+func publicQuotaRefresh(value *config.QuotaRefreshConfig, now time.Time) map[string]any {
+	if value == nil {
+		return nil
+	}
+	result := map[string]any{}
+	if record := publicQuotaRefreshRecord(value.FiveHour, 5*time.Hour, now); record != nil {
+		result["five_hour"] = record
+	}
+	if record := publicQuotaRefreshRecord(value.Weekly, 7*24*time.Hour, now); record != nil {
+		result["weekly"] = record
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func publicQuotaRefreshRecord(record *config.QuotaRefreshRecord, period time.Duration, now time.Time) map[string]any {
+	if record == nil || record.AnchorAt == nil || record.AnchorAt.IsZero() {
+		return nil
+	}
+	result := map[string]any{
+		"anchor_at":       record.AnchorAt.UTC(),
+		"source":          record.Source,
+		"recorded_at":     record.RecordedAt,
+		"authoritative":   record.Authoritative,
+		"next_refresh_at": config.NextRefreshAt(record.AnchorAt.UTC(), period, now.UTC()),
+	}
+	return result
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

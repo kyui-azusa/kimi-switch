@@ -336,7 +336,6 @@ func TestReorderKeysAPIReordersAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	request := httptest.NewRequest(http.MethodPost, "/api/keys/reorder", strings.NewReader(`{"names":["c","a","b"]}`))
 	request.Header.Set("Authorization", "Bearer local")
 	request.Header.Set("Content-Type", "application/json")
@@ -379,7 +378,6 @@ func TestReorderKeysAPIRejectsInvalidInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	request := httptest.NewRequest(http.MethodPost, "/api/keys/reorder", strings.NewReader(`{"names":["a","a"]}`))
 	request.Header.Set("Authorization", "Bearer local")
 	request.Header.Set("Content-Type", "application/json")

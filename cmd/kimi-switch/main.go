@@ -177,7 +177,7 @@ func addKey(path string, args []string) error {
 	}
 	for i := range c.Keys {
 		if c.Keys[i].Name == name {
-			c.Keys[i] = key
+			c.Keys[i] = config.MergeImportedKey(c.Keys[i], key)
 			return config.Save(path, c)
 		}
 	}
@@ -234,7 +234,7 @@ func importKimi(args []string) error {
 		replaced := false
 		for i := range c.Keys {
 			if c.Keys[i].Name == name {
-				c.Keys[i] = key
+				c.Keys[i] = config.MergeImportedKey(c.Keys[i], key)
 				replaced = true
 				break
 			}
