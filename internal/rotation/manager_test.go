@@ -2,6 +2,8 @@ package rotation
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +175,75 @@ func TestDeleteActiveKeySelectsNextRecord(t *testing.T) {
 	}
 	if got := manager.Config().ActiveKey; got != "b" {
 		t.Fatalf("active key = %q, want b", got)
+	}
+}
+
+func TestReorderKeysPersistsAndKeepsActiveKey(t *testing.T) {
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.Keys = []config.KeyConfig{
+		{Name: "a", Enabled: true, APIKey: "a"},
+		{Name: "b", Enabled: true, APIKey: "b"},
+		{Name: "c", Enabled: true, APIKey: "c"},
+	}
+	c.ActiveKey = "b"
+	manager, err := NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.ReorderKeys([]string{"c", "a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := manager.Config()
+	if got.ActiveKey != "b" {
+		t.Fatalf("active key = %q, want b", got.ActiveKey)
+	}
+	if order := []string{got.Keys[0].Name, got.Keys[1].Name, got.Keys[2].Name}; !slices.Equal(order, []string{"c", "a", "b"}) {
+		t.Fatalf("order = %v", order)
+	}
+
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order := []string{persisted.Keys[0].Name, persisted.Keys[1].Name, persisted.Keys[2].Name}; !slices.Equal(order, []string{"c", "a", "b"}) {
+		t.Fatalf("persisted order = %v", order)
+	}
+}
+
+func TestReorderKeysRejectsInvalidInput(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{
+		{Name: "a", Enabled: true, APIKey: "a"},
+		{Name: "b", Enabled: true, APIKey: "b"},
+	}
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		input []string
+		want  string
+	}{
+		{name: "missing", input: []string{"a"}, want: "exactly 2 names"},
+		{name: "duplicate", input: []string{"a", "a"}, want: `duplicate key "a"`},
+		{name: "unknown", input: []string{"a", "c"}, want: `unknown key "c"`},
+		{name: "empty", input: []string{"a", ""}, want: "cannot be empty"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := manager.ReorderKeys(tt.input)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 
