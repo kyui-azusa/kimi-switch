@@ -3,10 +3,12 @@ import {
   Activity,
   ArrowLeft,
   Check,
+  Clock3,
   Copy,
   Download,
   Edit3,
   GripVertical,
+  Info,
   KeyRound,
   Moon,
   Play,
@@ -21,7 +23,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, type ConnectivityResult, type DailyUsage, type KeyConfig, type KeyInput, type KeyStats, type RotationConfig, type StatusResponse } from "@/lib/api";
+import { api, type ConnectivityResult, type DailyUsage, type KeyConfig, type KeyInput, type KeyStats, type QuotaRefreshRecord, type RotationConfig, type StatusResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
@@ -52,6 +54,58 @@ const emptyStats: KeyStats = {
 
 function formatNumber(value = 0) {
   return new Intl.NumberFormat("zh-CN", { notation: value >= 100000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
+}
+
+function toLocalDateTimeInput(iso?: string) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset();
+  return new Date(date.getTime() - offset * 60000).toISOString().slice(0, 16);
+}
+
+function toIsoOrEmpty(localValue: string) {
+  if (!localValue) return "";
+  const date = new Date(localValue);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+type QuotaRefreshFormKey = "five_hour" | "weekly";
+
+type QuotaRefreshFormState = Record<QuotaRefreshFormKey, { anchor_at: string }>;
+
+type KeyFormState = Omit<KeyInput, "quota_refresh"> & { quota_refresh: QuotaRefreshFormState };
+
+function buildQuotaRefreshPayload(current: KeyConfig | undefined, form: QuotaRefreshFormState, initial: QuotaRefreshFormState): KeyInput["quota_refresh"] {
+  const payload: NonNullable<KeyInput["quota_refresh"]> = {};
+  for (const key of ["five_hour", "weekly"] as const) {
+    if (current) {
+      if (form[key].anchor_at === initial[key].anchor_at) continue;
+      payload[key] = { anchor_at: toIsoOrEmpty(form[key].anchor_at) };
+      continue;
+    }
+    if (!form[key].anchor_at) continue;
+    payload[key] = { anchor_at: toIsoOrEmpty(form[key].anchor_at) };
+  }
+  return Object.keys(payload).length ? payload : undefined;
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未记录";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function quotaReferenceLabel(record?: QuotaRefreshRecord) {
+  if (!record) return "未记录";
+  return record.authoritative ? "官方标准口径" : "手动参考 · 非官方";
 }
 
 function sourceLabel(key: KeyConfig) {
@@ -133,24 +187,35 @@ function AccountForm({ current, onBack, onSaved, notify }: {
   onSaved: () => Promise<void>;
   notify: (message: string, error?: boolean) => void;
 }) {
-  const [form, setForm] = useState<KeyInput>({
+  const initialQuotaRefresh = useRef<QuotaRefreshFormState>({
+    five_hour: { anchor_at: toLocalDateTimeInput(current?.quota_refresh?.five_hour?.anchor_at) },
+    weekly: { anchor_at: toLocalDateTimeInput(current?.quota_refresh?.weekly?.anchor_at) },
+  });
+  const [form, setForm] = useState<KeyFormState>({
     name: current?.name || "",
     account: current?.account || "",
     notes: current?.notes || "",
     api_key: "",
     api_key_env: current?.api_key_env || "",
     enabled: current?.enabled ?? true,
+    quota_refresh: initialQuotaRefresh.current,
   });
   const [saving, setSaving] = useState(false);
-  const update = <K extends keyof KeyInput>(key: K, value: KeyInput[K]) => setForm((old) => ({ ...old, [key]: value }));
+  const update = <K extends keyof KeyFormState>(key: K, value: KeyFormState[K]) => setForm((old) => ({ ...old, [key]: value }));
+  const updateQuotaRefresh = (key: "five_hour" | "weekly", value: string) =>
+    setForm((old) => ({ ...old, quota_refresh: { ...old.quota_refresh, [key]: { anchor_at: value } } }));
 
   const save = async () => {
     if (!form.name.trim()) return notify("请填写账号名称", true);
     if (!current && !form.api_key.trim() && !form.api_key_env.trim()) return notify("请填写 API Key 或环境变量", true);
     setSaving(true);
     try {
-      if (current) await api.updateKey(current.name, form);
-      else await api.createKey(form);
+      const payload: KeyInput = {
+        ...form,
+        quota_refresh: buildQuotaRefreshPayload(current, form.quota_refresh, initialQuotaRefresh.current),
+      };
+      if (current) await api.updateKey(current.name, payload);
+      else await api.createKey(payload);
       notify(current ? "账号已更新" : "账号已创建");
       await onSaved();
       onBack();
@@ -197,6 +262,25 @@ function AccountForm({ current, onBack, onSaved, notify }: {
             <div><div className="text-sm font-medium">参与代理与轮换</div><div className="mt-0.5 text-xs text-muted-foreground">关闭后保留账号，但不会被自动选择</div></div>
             <Switch checked={form.enabled} onCheckedChange={(value) => update("enabled", value)} />
           </div>
+        </div>
+      </section>
+
+      <section className="mt-5 rounded-xl border border-border bg-card p-6 shadow-sm">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600"><Clock3 className="h-5 w-5" /></div>
+          <div><h2 className="font-semibold">额度刷新参考时间</h2><p className="text-sm text-muted-foreground">手工记录，用于安排后续真实测试。</p></div>
+        </div>
+        <div className="grid gap-5 sm:grid-cols-2">
+          <Field label="5 小时额度刷新参考时间" hint="留空可清除。">
+            <input className={fieldClass} type="datetime-local" value={form.quota_refresh.five_hour.anchor_at || ""} onChange={(e) => updateQuotaRefresh("five_hour", e.target.value)} />
+          </Field>
+          <Field label="周额度刷新参考时间" hint="留空可清除。">
+            <input className={fieldClass} type="datetime-local" value={form.quota_refresh.weekly.anchor_at || ""} onChange={(e) => updateQuotaRefresh("weekly", e.target.value)} />
+          </Field>
+        </div>
+        <div className="mt-5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm leading-6 text-amber-700 dark:text-amber-300">
+          <Info className="mr-2 inline h-4 w-4 align-[-2px]" />
+          仅作参考，不代表 Kimi 官方额度或刷新承诺，也不参与自动轮换与健康判断。
         </div>
       </section>
     </FullScreenPanel>
@@ -390,6 +474,10 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, 
   onMove: (item: KeyConfig, direction: -1 | 1) => void;
 }) {
   const state = statusOf(item, stats);
+  const quotaCards = [
+    { key: "five_hour", label: "5 小时窗口", record: item.quota_refresh?.five_hour },
+    { key: "weekly", label: "周额度窗口", record: item.quota_refresh?.weekly },
+  ] as const;
   return (
     <article
       className={cn(
@@ -403,7 +491,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, 
     >
       <div className={cn("pointer-events-none absolute inset-0 bg-gradient-to-r from-blue-500/10 to-transparent transition-opacity", active ? "opacity-100" : "opacity-0")} />
       {dropEdge && <div className={cn("pointer-events-none absolute inset-x-2 z-20 h-0.5 rounded-full bg-blue-500", dropEdge === "before" ? "top-0" : "bottom-0")} />}
-      <div className="relative flex min-w-0 items-center justify-between gap-4">
+      <div className="relative flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <button
             type="button"
@@ -437,7 +525,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, 
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Token</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.total_tokens || stats.estimated_tokens)}</div></div>
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">失败</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.failures)}</div></div>
         </div>
-        <div className="flex flex-shrink-0 items-center gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
+        <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
           <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
           <Button size="icon" variant="ghost" title="真实可用性测试（发送最多 1 个输出 Token）" disabled={testing} onClick={() => onAction("test", item)}><RadioTower className={cn("h-4 w-4", testing && "animate-pulse text-blue-500")} /></Button>
           <Button size="icon" variant="ghost" title="编辑" onClick={() => onAction("edit", item)}><Edit3 className="h-4 w-4" /></Button>
@@ -446,6 +534,20 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, 
           <Button size="icon" variant="ghost" title="删除" onClick={() => onAction("delete", item)} className="hover:text-red-500"><Trash2 className="h-4 w-4" /></Button>
         </div>
       </div>
+      <div className="relative mt-3 grid divide-y divide-border border-t border-border sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+        {quotaCards.map(({ key, label, record }) => (
+          <div key={key} className="min-w-0 py-2.5 sm:px-3 sm:first:pl-0 sm:last:pr-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-foreground/85">{label}</span>
+              <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", !record ? "bg-muted text-muted-foreground" : record.authoritative ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-amber-500/10 text-amber-700 dark:text-amber-300")}>
+                {quotaReferenceLabel(record)}
+              </span>
+            </div>
+            <div className="mt-2 text-sm font-semibold tabular-nums">{formatDateTime(record?.next_refresh_at)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="relative mt-2 flex items-start gap-1.5 text-[11px] leading-5 text-muted-foreground"><Info className="mt-0.5 h-3 w-3 flex-shrink-0" />刷新时间不直接决定账号可用性，请以真实测试结果为准。</div>
     </article>
   );
 }
@@ -689,21 +791,21 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
-      <header className="flex h-16 flex-shrink-0 items-center justify-between gap-3 border-b border-border bg-background/85 px-6 backdrop-blur-md" data-tauri-drag-region>
-        <div className="no-drag flex items-center gap-1.5"><button className="text-xl font-semibold text-blue-500 transition-colors hover:text-blue-600">KimiSwitch</button><Button variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button><Button variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
-        <div className="no-drag flex items-center gap-2">
+      <header className="flex h-16 flex-shrink-0 items-center justify-between gap-2 border-b border-border bg-background/85 px-3 backdrop-blur-md sm:px-6" data-tauri-drag-region>
+        <div className="no-drag flex min-w-0 items-center gap-1"><button className="truncate text-base font-semibold text-blue-500 transition-colors hover:text-blue-600 sm:text-xl">KimiSwitch</button><Button className="h-8 w-8" variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button><Button className="h-8 w-8" variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
+        <div className="no-drag flex flex-shrink-0 items-center gap-1 sm:gap-2">
           <span className="hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />代理运行中</span>
-          <div className={cn("flex items-center gap-2 rounded-lg border px-3 py-1.5", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || `配置：${status.kimi_takeover.config_path}`}><span className="text-xs text-muted-foreground">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span><Switch checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
-          <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-1.5"><span className="text-xs text-muted-foreground">自动轮换</span><Switch checked={status.config.rotation.enabled} onCheckedChange={toggleRotation} /></div>
+          <div className={cn("flex items-center gap-2 rounded-lg border px-2 py-1.5 sm:px-3", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || `配置：${status.kimi_takeover.config_path}`}><span className="hidden text-xs text-muted-foreground lg:inline">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span><Switch aria-label="KimiSwitch 接管" checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
+          <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1.5 sm:px-3"><span className="hidden text-xs text-muted-foreground lg:inline">自动轮换</span><Switch aria-label="自动轮换" checked={status.config.rotation.enabled} onCheckedChange={toggleRotation} /></div>
           <Button size="icon" title="添加账号" className="h-8 w-8 rounded-full bg-orange-500 shadow-lg shadow-orange-500/25 hover:bg-orange-600" onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" /></Button>
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6">
         <div className="mx-auto max-w-6xl">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div><h1 className="text-2xl font-semibold tracking-tight">Kimi Code 账号</h1><p className="mt-1 text-sm text-muted-foreground">管理已授权的账号、切换当前 Key，并按调用顺序轮换。</p></div>
-            <div className="flex items-center gap-2"><Button variant="outline" title="逐个发送最多 1 个输出 Token，检测真实额度与鉴权状态" disabled={testingKeys.size > 0} onClick={() => void testAllAccounts()}><RadioTower className={cn("h-4 w-4", testingKeys.size > 0 && "animate-pulse")} />{testingKeys.size > 0 ? `测试中 ${testingKeys.size}` : "测试全部"}</Button><Button variant="outline" onClick={() => setPanel({ kind: "import" })}><Download className="h-4 w-4" />导入当前配置</Button><Button onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" />添加账号</Button></div>
+            <div className="flex w-full items-center gap-2 sm:w-auto"><Button className="min-w-0 flex-1 sm:flex-none" variant="outline" title="逐个发送最多 1 个输出 Token，检测真实额度与鉴权状态" disabled={testingKeys.size > 0} onClick={() => void testAllAccounts()}><RadioTower className={cn("h-4 w-4", testingKeys.size > 0 && "animate-pulse")} /><span className="hidden sm:inline">{testingKeys.size > 0 ? `测试中 ${testingKeys.size}` : "测试全部"}</span></Button><Button className="min-w-0 flex-1 sm:flex-none" variant="outline" title="导入当前配置" onClick={() => setPanel({ kind: "import" })}><Download className="h-4 w-4" /><span className="hidden sm:inline">导入当前配置</span></Button><Button className="min-w-0 flex-1 sm:flex-none" title="添加账号" onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" /><span className="hidden sm:inline">添加账号</span></Button></div>
           </div>
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">

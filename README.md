@@ -18,6 +18,7 @@ Its desktop information architecture, visual tokens, and selected UI wrappers ar
 - Classifies observed failures as exhausted quota, temporary rate limit, invalid key, disabled account, network failure, or upstream failure using HTTP status, provider error type, and message text.
 - Quarantines failed accounts for at least 10 minutes. Healthy accounts are always preferred; a cooled account is retried only when no enabled healthy account remains.
 - Records per-key and per-day request, success, error, input, output, cache-read, reasoning, observed-total, and estimated-token statistics.
+- Phase 1 supports manually recording quota refresh reference times for the five-hour window and weekly window. These values are informational only and never drive rotation, health, or quota decisions.
 - Provides a separate Kimi Code direct/KimiSwitch takeover switch. Takeover changes only model-provider routing, preserves the original provider, creates `~/.kimi-code/config.toml.kimiswitch.bak`, and can restore direct mode atomically.
 - Does not scrape undocumented quota pages, spoof the client identity, or claim that locally observed usage is an account's remaining quota.
 
@@ -105,6 +106,21 @@ The desktop header has two independent switches:
 Import remains read-only. Enabling takeover keeps the original provider block intact, writes a marked `kimi-switch-local` provider, redirects only model `provider` references that used the active original provider, and creates a one-time backup. Disabling takeover restores those references and removes the managed block. After either change, run `/reload` in an already-running Kimi Code session; new sessions read the new configuration directly.
 
 The usage page follows the familiar CC Switch breakdown while adapting it to Kimi's response fields: input, output, cache-read, reasoning, total, request outcomes, per-account totals, and 7/30-day trends. Real token values come from upstream `usage`; requests without a usable `usage` object are shown separately as estimates.
+
+## Manual quota refresh references
+
+[#2](https://github.com/kyui-azusa/kimi-switch/issues/2) delivers the manual first phase. [#13](https://github.com/kyui-azusa/kimi-switch/issues/13) tracks official synchronization as a separate second phase.
+
+- Phase 1 stores user-entered reference timestamps for the five-hour window and weekly window.
+- The desktop app and legacy web form show these values in local time for easier manual entry.
+- The persisted config and status API use UTC RFC3339 timestamps such as `2026-08-21T09:00:00Z`.
+- The desktop app shows these values as `手动参考 · 非官方`.
+- They are only for arranging real verification tests and observation.
+- They must not be treated as authoritative remaining-quota data, and they must not affect rotation, account health, or automatic switching.
+
+The only authoritative source of truth is a value that is directly provided by the official upstream, can be re-checked reliably, and has clear provenance. Manual entries, test observations, derived estimates, `imported_at`, `Retry-After`, and error messages are all reference signals only until such an official field exists and is synchronized.
+
+See [docs/README.md](docs/README.md) and [docs/account-health.md](docs/account-health.md) for the phase-1 wording used by the desktop UI.
 
 ## Admin endpoints
 
