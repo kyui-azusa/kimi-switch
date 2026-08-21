@@ -34,6 +34,7 @@ type Panel =
   | null;
 
 type AccountAction = "use" | "test" | "edit" | "duplicate" | "toggle" | "delete";
+type DropEdge = "before" | "after";
 
 const emptyStats: KeyStats = {
   requests: 0,
@@ -75,6 +76,17 @@ function statusOf(key: KeyConfig, stats: KeyStats) {
   if (stats.last_error) return { label: "最近失败", color: "bg-red-500", text: "text-red-500" };
   if (stats.last_check_status === "ok") return { label: `连通 · ${stats.last_check_ms || 0} ms`, color: "bg-emerald-500", text: "text-emerald-600" };
   return { label: "可用", color: "bg-emerald-500", text: "text-emerald-600" };
+}
+
+function reorderAccounts(keys: KeyConfig[], draggedName: string, targetName: string, edge: DropEdge) {
+  if (draggedName === targetName) return keys;
+  const dragged = keys.find((key) => key.name === draggedName);
+  if (!dragged) return keys;
+  const reordered = keys.filter((key) => key.name !== draggedName);
+  const targetIndex = reordered.findIndex((key) => key.name === targetName);
+  if (targetIndex < 0) return keys;
+  reordered.splice(targetIndex + (edge === "after" ? 1 : 0), 0, dragged);
+  return reordered;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -361,21 +373,58 @@ function UsagePanel({ status, onBack }: { status: StatusResponse; onBack: () => 
   );
 }
 
-function AccountCard({ item, stats, active, rotationEnabled, testing, onAction }: {
+function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, dragging, dropEdge, onAction, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onMove }: {
   item: KeyConfig;
   stats: KeyStats;
   active: boolean;
   rotationEnabled: boolean;
   testing: boolean;
+  sortable: boolean;
+  dragging: boolean;
+  dropEdge: DropEdge | null;
   onAction: (action: AccountAction, item: KeyConfig) => void;
+  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>, item: KeyConfig) => void;
+  onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onMove: (item: KeyConfig, direction: -1 | 1) => void;
 }) {
   const state = statusOf(item, stats);
   return (
-    <article className={cn("group relative overflow-hidden rounded-xl border border-border bg-card p-4 text-card-foreground transition-all duration-300 hover:border-blue-500/40 hover:shadow-sm", active && "border-blue-500/60 shadow-sm shadow-blue-500/10", !item.enabled && "opacity-65")}>
+    <article
+      className={cn(
+        "group relative overflow-hidden rounded-xl border border-border bg-card p-4 text-card-foreground transition-all duration-200 hover:border-blue-500/40 hover:shadow-sm",
+        active && "border-blue-500/60 shadow-sm shadow-blue-500/10",
+        !item.enabled && "opacity-65",
+        dragging && "scale-[0.995] opacity-45",
+        dropEdge && "border-blue-500/70 shadow-sm shadow-blue-500/10",
+      )}
+      data-account-name={item.name}
+    >
       <div className={cn("pointer-events-none absolute inset-0 bg-gradient-to-r from-blue-500/10 to-transparent transition-opacity", active ? "opacity-100" : "opacity-0")} />
+      {dropEdge && <div className={cn("pointer-events-none absolute inset-x-2 z-20 h-0.5 rounded-full bg-blue-500", dropEdge === "before" ? "top-0" : "bottom-0")} />}
       <div className="relative flex min-w-0 items-center justify-between gap-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="-ml-1.5 p-1.5 text-muted-foreground/40"><GripVertical className="h-4 w-4" /></span>
+          <button
+            type="button"
+            className={cn("-ml-1.5 flex h-8 w-7 touch-none select-none flex-shrink-0 items-center justify-center text-muted-foreground transition-colors", sortable ? "cursor-grab hover:text-foreground active:cursor-grabbing" : "cursor-default opacity-35")}
+            disabled={!sortable}
+            title="调整顺序"
+            aria-label={`调整 ${item.name} 的顺序`}
+            aria-keyshortcuts="ArrowUp ArrowDown"
+            onPointerDown={(event) => onPointerDown(event, item)}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerCancel}
+            onLostPointerCapture={onPointerCancel}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+              event.preventDefault();
+              onMove(item, event.key === "ArrowUp" ? -1 : 1);
+            }}
+          >
+            <GripVertical className="h-4 w-4" />
+          </button>
           <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-blue-500 transition-transform group-hover:scale-105"><KeyRound className="h-5 w-5" /></div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2"><h3 className="truncate text-base font-semibold">{item.name}</h3>{active && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前</span>}{rotationEnabled && item.enabled && <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">轮换池</span>}</div>
@@ -412,17 +461,24 @@ export default function App() {
   const [testingKeys, setTestingKeys] = useState<Set<string>>(() => new Set());
   const [deleteTarget, setDeleteTarget] = useState<KeyConfig | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [draggedAccount, setDraggedAccount] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ name: string; edge: DropEdge } | null>(null);
+  const [reordering, setReordering] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const reorderingRef = useRef(false);
+  const dropTargetRef = useRef<{ name: string; edge: DropEdge } | null>(null);
+  const pointerDragRef = useRef<{ name: string; startX: number; startY: number; active: boolean } | null>(null);
 
   const notify = useCallback((message: string, error = false) => {
     setToast({ message, error });
     window.setTimeout(() => setToast(null), 3200);
   }, []);
 
-  const refresh = useCallback(async (silent = false) => {
+  const refresh = useCallback(async (silent = false, force = false) => {
     if (!silent) setLoading(true);
     try {
-      setStatus(await api.status());
+      const nextStatus = await api.status();
+      if (!reorderingRef.current || force) setStatus(nextStatus);
       setConnectionError("");
     } catch (error) {
       setConnectionError(error instanceof Error ? error.message : "无法连接本地代理");
@@ -458,6 +514,92 @@ export default function App() {
     const q = search.trim().toLowerCase();
     return (status?.config.keys || []).filter((item) => !q || [item.name, item.account, item.notes, item.api_key_env].some((value) => value?.toLowerCase().includes(q)));
   }, [status, search]);
+
+  const canReorder = Boolean(status && status.config.keys.length > 1 && !search.trim() && !reordering);
+
+  const persistAccountOrder = async (nextKeys: KeyConfig[], movedName: string) => {
+    if (!status || reorderingRef.current) return;
+    const previousKeys = status.config.keys;
+    if (nextKeys.every((key, index) => key.name === previousKeys[index]?.name)) return;
+    reorderingRef.current = true;
+    setReordering(true);
+    setStatus((current) => current ? { ...current, config: { ...current.config, keys: nextKeys } } : current);
+    try {
+      await api.reorderKeys(nextKeys.map((key) => key.name));
+      await refresh(true, true);
+      notify(`${movedName} 已移动到第 ${nextKeys.findIndex((key) => key.name === movedName) + 1} 位`);
+    } catch (error) {
+      setStatus((current) => current ? { ...current, config: { ...current.config, keys: previousKeys } } : current);
+      notify(error instanceof Error ? error.message : "保存账号顺序失败", true);
+    } finally {
+      reorderingRef.current = false;
+      setReordering(false);
+    }
+  };
+
+  const setAccountDropTarget = (target: { name: string; edge: DropEdge } | null) => {
+    dropTargetRef.current = target;
+    setDropTarget(target);
+  };
+
+  const finishAccountDrag = () => {
+    setDraggedAccount(null);
+    setAccountDropTarget(null);
+  };
+
+  const startAccountPointerDrag = (event: React.PointerEvent<HTMLButtonElement>, item: KeyConfig) => {
+    if (!canReorder || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.focus();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerDragRef.current = { name: item.name, startX: event.clientX, startY: event.clientY, active: false };
+    setAccountDropTarget(null);
+  };
+
+  const moveAccountPointer = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = pointerDragRef.current;
+    if (!drag || !canReorder) return;
+    if (!drag.active && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
+    if (!drag.active) {
+      drag.active = true;
+      setDraggedAccount(drag.name);
+    }
+    event.preventDefault();
+    const card = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-account-name]");
+    const targetName = card?.dataset.accountName;
+    if (!targetName || targetName === drag.name) {
+      setAccountDropTarget(null);
+      return;
+    }
+    const bounds = card.getBoundingClientRect();
+    const edge: DropEdge = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+    const current = dropTargetRef.current;
+    if (current?.name !== targetName || current.edge !== edge) setAccountDropTarget({ name: targetName, edge });
+  };
+
+  const endAccountPointerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = pointerDragRef.current;
+    const target = dropTargetRef.current;
+    pointerDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    finishAccountDrag();
+    if (!status || !canReorder || !drag?.active || !target) return;
+    void persistAccountOrder(reorderAccounts(status.config.keys, drag.name, target.name, target.edge), drag.name);
+  };
+
+  const cancelAccountPointerDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    pointerDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    finishAccountDrag();
+  };
+
+  const moveAccount = (item: KeyConfig, direction: -1 | 1) => {
+    if (!status || !canReorder) return;
+    const index = status.config.keys.findIndex((key) => key.name === item.name);
+    const target = status.config.keys[index + direction];
+    if (!target) return;
+    void persistAccountOrder(reorderAccounts(status.config.keys, item.name, target.name, direction < 0 ? "before" : "after"), item.name);
+  };
 
   const testAccount = async (item: KeyConfig): Promise<ConnectivityResult> => {
     setTestingKeys((old) => new Set(old).add(item.name));
@@ -579,7 +721,7 @@ export default function App() {
           {!status.config.keys.length ? (
             <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border p-10 text-center"><div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-muted"><Users className="h-7 w-7 text-muted-foreground" /></div><h3 className="text-lg font-semibold">还没有账号</h3><p className="mt-2 max-w-lg text-sm text-muted-foreground">导入 Kimi Code 当前配置，或手动添加公司授权的 API Key。</p><div className="mt-6 flex flex-col gap-2"><Button onClick={() => setPanel({ kind: "import" })}><Download className="h-4 w-4" />导入当前配置</Button><Button variant="outline" onClick={() => setPanel({ kind: "form" })}>添加账号</Button></div></div>
           ) : accounts.length ? (
-            <div className="grid gap-3">{accounts.map((item) => <AccountCard key={item.name} item={item} stats={status.keys[item.name] || emptyStats} active={status.config.active_key === item.name} rotationEnabled={status.config.rotation.enabled} testing={testingKeys.has(item.name)} onAction={action} />)}</div>
+            <div className="grid gap-3">{accounts.map((item) => <AccountCard key={item.name} item={item} stats={status.keys[item.name] || emptyStats} active={status.config.active_key === item.name} rotationEnabled={status.config.rotation.enabled} testing={testingKeys.has(item.name)} sortable={canReorder} dragging={draggedAccount === item.name} dropEdge={dropTarget?.name === item.name ? dropTarget.edge : null} onAction={action} onPointerDown={startAccountPointerDrag} onPointerMove={moveAccountPointer} onPointerUp={endAccountPointerDrag} onPointerCancel={cancelAccountPointerDrag} onMove={moveAccount} />)}</div>
           ) : <div className="rounded-lg border border-dashed border-border p-10 text-center text-sm text-muted-foreground">没有匹配的账号</div>}
 
           <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15721/v1</span><span>{status.config.rotation.enabled ? `轮换已开启 · ${status.config.rotation.mode === "request" ? "按请求" : "Token 观察"}` : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
@@ -601,7 +743,7 @@ export default function App() {
           </section>
         </div>
       )}
-      {toast && <div className={cn("fixed bottom-5 right-5 z-[80] max-w-sm rounded-xl border px-4 py-3 text-sm shadow-xl", toast.error ? "border-red-500/30 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-200" : "border-border bg-card text-card-foreground")}><div className="flex items-center gap-2">{toast.error ? <X className="h-4 w-4" /> : <Check className="h-4 w-4 text-emerald-500" />}{toast.message}</div></div>}
+      {toast && <div role={toast.error ? "alert" : "status"} aria-live={toast.error ? "assertive" : "polite"} className={cn("fixed bottom-5 right-5 z-[80] max-w-sm rounded-xl border px-4 py-3 text-sm shadow-xl", toast.error ? "border-red-500/30 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-200" : "border-border bg-card text-card-foreground")}><div className="flex items-center gap-2">{toast.error ? <X className="h-4 w-4" /> : <Check className="h-4 w-4 text-emerald-500" />}{toast.message}</div></div>}
     </div>
   );
 }

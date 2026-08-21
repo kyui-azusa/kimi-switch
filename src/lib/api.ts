@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:15721";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:15721";
 const LOCAL_KEY = "local-kimi-switch";
 
 export interface RotationConfig {
@@ -119,6 +119,7 @@ export const api = {
   updateKey: (name: string, input: KeyInput) => request(`/api/keys/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(input) }),
   deleteKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}`, { method: "DELETE" }),
   duplicateKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}/duplicate`, { method: "POST" }),
+  reorderKeys: (names: string[]) => request("/api/keys/reorder", { method: "POST", body: JSON.stringify({ names }) }),
   testKey: (name: string) => request<ConnectivityResult>(`/api/keys/${encodeURIComponent(name)}/test`, { method: "POST" }),
   useKey: (name: string) => request(`/api/keys/${encodeURIComponent(name)}/use`, { method: "POST" }),
   toggleKey: (name: string, enabled: boolean) => request(`/api/keys/${encodeURIComponent(name)}/toggle`, { method: "POST", body: JSON.stringify({ enabled }) }),

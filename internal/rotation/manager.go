@@ -236,6 +236,47 @@ func (m *Manager) SetKeyEnabled(name string, enabled bool) error {
 	return fmt.Errorf("unknown key %q", name)
 }
 
+func (m *Manager) ReorderKeys(names []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(names) != len(m.cfg.Keys) {
+		return fmt.Errorf("reorder requires exactly %d names", len(m.cfg.Keys))
+	}
+
+	byName := make(map[string]config.KeyConfig, len(m.cfg.Keys))
+	for _, key := range m.cfg.Keys {
+		byName[key.Name] = key
+	}
+
+	seen := make(map[string]bool, len(names))
+	reordered := make([]config.KeyConfig, 0, len(names))
+	for _, rawName := range names {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return errors.New("reorder names cannot be empty")
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate key %q in reorder", name)
+		}
+		key, ok := byName[name]
+		if !ok {
+			return fmt.Errorf("unknown key %q", name)
+		}
+		seen[name] = true
+		reordered = append(reordered, key)
+	}
+
+	for _, key := range m.cfg.Keys {
+		if !seen[key.Name] {
+			return fmt.Errorf("missing key %q in reorder", key.Name)
+		}
+	}
+
+	m.cfg.Keys = reordered
+	return m.persistLocked()
+}
+
 func (m *Manager) DuplicateKey(name string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
