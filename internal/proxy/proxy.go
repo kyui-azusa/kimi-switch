@@ -171,6 +171,19 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		s.handleKimiImport(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/keys":
 		s.handleKeyUpsert(w, r, "")
+	case r.Method == http.MethodPost && r.URL.Path == "/api/keys/reorder":
+		var input struct {
+			Names []string `json:"names"`
+		}
+		if err := decodeJSON(r, &input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := s.manager.ReorderKeys(input.Names); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/keys/") && strings.HasSuffix(r.URL.Path, "/test"):
 		name, action, err := parseKeyPath(r.URL.Path)
 		if err != nil || action != "test" {
