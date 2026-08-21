@@ -17,6 +17,7 @@ const (
 	DefaultLocalAPIKey            = "local-kimi-switch"
 	DefaultFailureCooldownSeconds = 600
 	RotationModeSticky            = "sticky"
+	QuotaRefreshSourceManual      = "manual_reference"
 )
 
 // Config is intentionally separate from Kimi Code's config.toml. KimiSwitch
@@ -43,14 +44,27 @@ type RotationConfig struct {
 }
 
 type KeyConfig struct {
-	Name      string `json:"name"`
-	Account   string `json:"account,omitempty"`
-	Notes     string `json:"notes,omitempty"`
-	APIKey    string `json:"api_key,omitempty"`
-	APIKeyEnv string `json:"api_key_env,omitempty"`
-	SecretRef string `json:"secret_ref,omitempty"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt int64  `json:"created_at,omitempty"`
+	Name         string              `json:"name"`
+	Account      string              `json:"account,omitempty"`
+	Notes        string              `json:"notes,omitempty"`
+	APIKey       string              `json:"api_key,omitempty"`
+	APIKeyEnv    string              `json:"api_key_env,omitempty"`
+	SecretRef    string              `json:"secret_ref,omitempty"`
+	Enabled      bool                `json:"enabled"`
+	CreatedAt    int64               `json:"created_at,omitempty"`
+	QuotaRefresh *QuotaRefreshConfig `json:"quota_refresh,omitempty"`
+}
+
+type QuotaRefreshConfig struct {
+	FiveHour *QuotaRefreshRecord `json:"five_hour,omitempty"`
+	Weekly   *QuotaRefreshRecord `json:"weekly,omitempty"`
+}
+
+type QuotaRefreshRecord struct {
+	AnchorAt      *time.Time `json:"anchor_at,omitempty"`
+	Source        string     `json:"source,omitempty"`
+	RecordedAt    *time.Time `json:"recorded_at,omitempty"`
+	Authoritative bool       `json:"authoritative"`
 }
 
 func Default() Config {
@@ -103,6 +117,7 @@ func (c *Config) Normalize() error {
 		if c.Keys[i].CreatedAt == 0 {
 			c.Keys[i].CreatedAt = time.Now().UnixMilli()
 		}
+		c.Keys[i].QuotaRefresh = NormalizeQuotaRefresh(c.Keys[i].QuotaRefresh)
 	}
 	if c.ActiveKey != "" && !seen[c.ActiveKey] {
 		return fmt.Errorf("active_key %q does not exist", c.ActiveKey)
@@ -120,6 +135,93 @@ func NormalizeRotationMode(mode string) (string, error) {
 	default:
 		return "", fmt.Errorf("rotation.mode must be sticky, got %q", mode)
 	}
+}
+
+func CloneQuotaRefresh(value *QuotaRefreshConfig) *QuotaRefreshConfig {
+	if value == nil {
+		return nil
+	}
+	clone := &QuotaRefreshConfig{
+		FiveHour: cloneQuotaRefreshRecord(value.FiveHour),
+		Weekly:   cloneQuotaRefreshRecord(value.Weekly),
+	}
+	if clone.FiveHour == nil && clone.Weekly == nil {
+		return nil
+	}
+	return clone
+}
+
+func NormalizeQuotaRefresh(value *QuotaRefreshConfig) *QuotaRefreshConfig {
+	clone := CloneQuotaRefresh(value)
+	if clone == nil {
+		return nil
+	}
+	clone.FiveHour = normalizeQuotaRefreshRecord(clone.FiveHour)
+	clone.Weekly = normalizeQuotaRefreshRecord(clone.Weekly)
+	if clone.FiveHour == nil && clone.Weekly == nil {
+		return nil
+	}
+	return clone
+}
+
+func MergeImportedKey(existing KeyConfig, incoming KeyConfig) KeyConfig {
+	if incoming.CreatedAt == 0 {
+		incoming.CreatedAt = existing.CreatedAt
+	}
+	if incoming.QuotaRefresh == nil {
+		incoming.QuotaRefresh = CloneQuotaRefresh(existing.QuotaRefresh)
+	}
+	incoming.Account = existing.Account
+	incoming.Notes = existing.Notes
+	if !existing.Enabled {
+		incoming.Enabled = false
+	}
+	return incoming
+}
+
+func NextRefreshAt(anchor time.Time, period time.Duration, now time.Time) time.Time {
+	if period <= 0 {
+		return time.Time{}
+	}
+	anchor = anchor.UTC()
+	now = now.UTC()
+	if now.Before(anchor) {
+		return anchor
+	}
+	elapsed := now.Sub(anchor)
+	cycles := elapsed/period + 1
+	return anchor.Add(cycles * period)
+}
+
+func cloneQuotaRefreshRecord(value *QuotaRefreshRecord) *QuotaRefreshRecord {
+	if value == nil {
+		return nil
+	}
+	clone := &QuotaRefreshRecord{
+		Source:        value.Source,
+		Authoritative: value.Authoritative,
+	}
+	if value.AnchorAt != nil {
+		anchor := value.AnchorAt.UTC()
+		clone.AnchorAt = &anchor
+	}
+	if value.RecordedAt != nil {
+		recorded := value.RecordedAt.UTC()
+		clone.RecordedAt = &recorded
+	}
+	return clone
+}
+
+func normalizeQuotaRefreshRecord(value *QuotaRefreshRecord) *QuotaRefreshRecord {
+	if value == nil || value.AnchorAt == nil || value.AnchorAt.IsZero() {
+		return nil
+	}
+	clone := cloneQuotaRefreshRecord(value)
+	if clone.RecordedAt == nil || clone.RecordedAt.IsZero() {
+		now := time.Now().UTC()
+		clone.RecordedAt = &now
+	}
+	return clone
 }
 
 func Path() string {

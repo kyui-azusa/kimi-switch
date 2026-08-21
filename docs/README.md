@@ -13,11 +13,12 @@
 
 | 项目 | 状态 | 跟踪位置 |
 | --- | --- | --- |
-| 默认代理端口改为 `127.0.0.1:15722` | 已在 0.1.2 分支实现 | [PR #3](https://github.com/kyui-azusa/kimi-switch/pull/3) |
-| 冷却到期后先探测再恢复 | 待实现 | [Issue #1](https://github.com/kyui-azusa/kimi-switch/issues/1) |
-| 记录并推算额度刷新时间 | 待实现 | [Issue #2](https://github.com/kyui-azusa/kimi-switch/issues/2) |
-| Tauri 应用内更新与签名发布 | 已在 0.2.0 分支实现 | [Issue #4](https://github.com/kyui-azusa/kimi-switch/issues/4) |
-| 外部配置写回后保持用户接管意图 | 已在 0.2.4 分支实现 | [Issue #10](https://github.com/kyui-azusa/kimi-switch/issues/10) |
+| 默认代理端口改为 `127.0.0.1:15722` | 已实现 | [PR #3](https://github.com/kyui-azusa/kimi-switch/pull/3) |
+| 冷却到期后先探测再恢复 | 设计中 | [Issue #1](https://github.com/kyui-azusa/kimi-switch/issues/1) |
+| 手工记录并推算额度刷新时间 | 已实现第一阶段 | [Issue #2](https://github.com/kyui-azusa/kimi-switch/issues/2) |
+| 从官方来源同步额度刷新时间 | 待实现第二阶段 | [Issue #13](https://github.com/kyui-azusa/kimi-switch/issues/13) |
+| Tauri 应用内更新与签名发布 | 已实现 | [Issue #4](https://github.com/kyui-azusa/kimi-switch/issues/4) |
+| 外部配置写回后保持用户接管意图 | 已实现 | [Issue #10](https://github.com/kyui-azusa/kimi-switch/issues/10) |
 
 ## 边界
 

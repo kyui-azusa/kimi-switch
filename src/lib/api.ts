@@ -9,6 +9,19 @@ export interface RotationConfig {
   retry_rate_limited: boolean;
 }
 
+export interface QuotaRefreshRecord {
+  anchor_at?: string;
+  source: string;
+  recorded_at?: string;
+  authoritative: boolean;
+  next_refresh_at?: string;
+}
+
+export interface KeyQuotaRefresh {
+  five_hour?: QuotaRefreshRecord;
+  weekly?: QuotaRefreshRecord;
+}
+
 export interface KeyConfig {
   name: string;
   account: string;
@@ -18,6 +31,7 @@ export interface KeyConfig {
   source: "keychain" | "keychain+local" | "environment" | "inline";
   api_key_env: string;
   api_key_set: boolean;
+  quota_refresh?: KeyQuotaRefresh;
 }
 
 export interface KeyStats {
@@ -85,6 +99,10 @@ export interface KeyInput {
   api_key: string;
   api_key_env: string;
   enabled: boolean;
+  quota_refresh?: {
+    five_hour?: { anchor_at: string };
+    weekly?: { anchor_at: string };
+  };
 }
 
 export interface ConnectivityResult {
