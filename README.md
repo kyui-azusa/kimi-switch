@@ -10,6 +10,7 @@ Updater signing, release-server deployment, and rollback are documented in [`doc
 ## What it does
 
 - Runs a loopback proxy on `127.0.0.1:15722`, avoiding CC Switch's default `15721` port.
+- Keeps the desktop app and proxy running from the system tray when the main window is closed. Use the tray icon to reopen KimiSwitch or quit it completely.
 - Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) instead of command-line arguments.
 - Supports manual active-key switching.
 - Supports an optional automatic rotation mode:
