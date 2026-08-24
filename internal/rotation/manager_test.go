@@ -200,6 +200,32 @@ func TestAnyFailedRequestStartsTenMinuteCooldown(t *testing.T) {
 	}
 }
 
+func TestCancelReleasesReservationWithoutCoolingAccount(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.Select(250, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.Cancel(selected)
+
+	_, state := manager.Snapshot()
+	stats := state.Keys["a"]
+	if stats.InFlight != 0 || stats.ReservedTokens != 0 {
+		t.Fatalf("canceled reservation was not released: %+v", stats)
+	}
+	if stats.Requests != 0 || stats.Failures != 0 || !stats.CooldownUntil.IsZero() || stats.LastCheckStatus != "" {
+		t.Fatalf("cancellation changed account health: %+v", stats)
+	}
+}
+
 func TestDeleteActiveKeySelectsNextRecord(t *testing.T) {
 	c := config.Default()
 	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}, {Name: "b", Enabled: true, APIKey: "b"}}

@@ -419,14 +419,7 @@ func (m *Manager) Finish(selected Selected, status int, usage Usage, requestErro
 		m.state.Daily[date] = map[string]DailyUsage{}
 	}
 	daily := m.state.Daily[date][selected.Key.Name]
-	if stats.InFlight > 0 {
-		stats.InFlight--
-	}
-	if stats.ReservedTokens >= selected.Estimate {
-		stats.ReservedTokens -= selected.Estimate
-	} else {
-		stats.ReservedTokens = 0
-	}
+	releaseSelection(&stats, selected.Estimate)
 	stats.Requests++
 	daily.Requests++
 	if requestError != nil || status >= 400 {
@@ -467,6 +460,28 @@ func (m *Manager) Finish(selected Selected, status int, usage Usage, requestErro
 	m.state.Keys[selected.Key.Name] = stats
 	m.state.Daily[date][selected.Key.Name] = daily
 	_ = m.persistStateLocked()
+}
+
+// Cancel releases request reservations without treating a caller-initiated
+// interruption as evidence that the account or upstream failed.
+func (m *Manager) Cancel(selected Selected) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stats := m.state.Keys[selected.Key.Name]
+	releaseSelection(&stats, selected.Estimate)
+	m.state.Keys[selected.Key.Name] = stats
+	_ = m.persistStateLocked()
+}
+
+func releaseSelection(stats *Stats, estimate int64) {
+	if stats.InFlight > 0 {
+		stats.InFlight--
+	}
+	if stats.ReservedTokens >= estimate {
+		stats.ReservedTokens -= estimate
+	} else {
+		stats.ReservedTokens = 0
+	}
 }
 
 func (m *Manager) MarkCooldown(name string, reason string) {

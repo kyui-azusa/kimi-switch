@@ -636,6 +636,10 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		copyRequestHeaders(request.Header, r.Header, apiKey)
 		response, doErr := s.client.Do(request)
 		if doErr != nil {
+			if callerCanceled(r.Context(), doErr) {
+				s.manager.Cancel(selected)
+				return
+			}
 			s.manager.Finish(selected, 0, rotation.Usage{}, doErr)
 			lastErr = doErr
 			continue
@@ -654,7 +658,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if stream && response.StatusCode < 400 {
-			s.streamResponse(w, response, selected)
+			s.streamResponse(r.Context(), w, response, selected)
 			return
 		}
 		lastBody, err = io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
@@ -684,7 +688,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "all upstream attempts failed"})
 }
 
-func (s *Server) streamResponse(w http.ResponseWriter, response *http.Response, selected rotation.Selected) {
+func (s *Server) streamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, selected rotation.Selected) {
 	defer response.Body.Close()
 	writeHeaders(w, response.Header)
 	w.WriteHeader(response.StatusCode)
@@ -713,7 +717,15 @@ func (s *Server) streamResponse(w http.ResponseWriter, response *http.Response, 
 			break
 		}
 	}
+	if streamErr != nil && callerCanceled(ctx, streamErr) {
+		s.manager.Cancel(selected)
+		return
+	}
 	s.manager.Finish(selected, response.StatusCode, usage, streamErr)
+}
+
+func callerCanceled(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 }
 
 func resolveAPIKey(key config.KeyConfig) (string, error) {
