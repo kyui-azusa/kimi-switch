@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +16,26 @@ import (
 	"github.com/kyui-azusa/kimi-switch/internal/config"
 	"github.com/kyui-azusa/kimi-switch/internal/rotation"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type canceledStreamWriter struct {
+	header http.Header
+}
+
+func (w *canceledStreamWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *canceledStreamWriter) WriteHeader(int) {}
+
+func (w *canceledStreamWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
 
 func TestBuildUpstreamURLAvoidsDuplicateV1(t *testing.T) {
 	got, err := buildUpstreamURL("https://api.kimi.com/coding/v1", "/v1/chat/completions", "x=1")
@@ -126,8 +149,80 @@ func TestProxyFailsOverAfterBillingCycleQuotaError(t *testing.T) {
 		t.Fatalf("status=%d calls=%d", response.StatusCode, calls.Load())
 	}
 	_, state := manager.Snapshot()
-	if state.Keys["a-empty"].LastCheckStatus != "quota_exhausted" {
+	if state.Keys["a-empty"].LastCheckStatus != "quota_exhausted" || !state.Keys["a-empty"].CooldownUntil.After(time.Now().UTC()) {
 		t.Fatalf("quota account status = %+v", state.Keys["a-empty"])
+	}
+}
+
+func TestCanceledUpstreamRequestDoesNotCoolAccountOrFailOver(t *testing.T) {
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 2
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}, {Name: "b", Enabled: true, APIKey: "b"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	calls := 0
+	server.client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return nil, context.Canceled
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"stop"}]}`)).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer local")
+
+	server.ServeHTTP(httptest.NewRecorder(), request)
+
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
+	}
+	_, state := manager.Snapshot()
+	for name, stats := range state.Keys {
+		if stats.InFlight != 0 || stats.ReservedTokens != 0 || stats.Failures != 0 || !stats.CooldownUntil.IsZero() || stats.LastCheckStatus == "quota_exhausted" {
+			t.Fatalf("cancellation changed account %q health: %+v", name, stats)
+		}
+	}
+}
+
+func TestCanceledStreamWriteDoesNotCoolAccount(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.Select(100, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("data: canceled\n")),
+	}
+
+	NewServer(manager).streamResponse(ctx, &canceledStreamWriter{header: make(http.Header)}, response, selected)
+
+	_, state := manager.Snapshot()
+	stats := state.Keys["a"]
+	if stats.InFlight != 0 || stats.ReservedTokens != 0 || stats.Failures != 0 || !stats.CooldownUntil.IsZero() || stats.LastCheckStatus == "quota_exhausted" {
+		t.Fatalf("stream cancellation changed account health: %+v", stats)
+	}
+}
+
+func TestCallerCanceledRequiresCanceledContextOrError(t *testing.T) {
+	if callerCanceled(context.Background(), errors.New("upstream disconnected")) {
+		t.Fatal("ordinary upstream errors must not be treated as caller cancellation")
 	}
 }
 
