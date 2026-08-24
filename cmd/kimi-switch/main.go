@@ -21,6 +21,11 @@ import (
 	"github.com/kyui-azusa/kimi-switch/internal/secret"
 )
 
+var (
+	secretReadForBackfill = secret.Read
+	configSaveForBackfill = config.Save
+)
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "kimi-switch:", err)
@@ -88,7 +93,10 @@ func serve(path string) error {
 	if err != nil {
 		return err
 	}
-	manager, err := loadManager(path)
+	c = backfillLocalAPIKeys(path, c, func(message string) {
+		fmt.Fprintln(os.Stderr, "kimi-switch:", message)
+	})
+	manager, err := rotation.NewManager(c, path, config.StatePath(c))
 	if err != nil {
 		return err
 	}
@@ -115,6 +123,32 @@ func serve(path string) error {
 	return err
 }
 
+func backfillLocalAPIKeys(path string, c config.Config, warn func(string)) config.Config {
+	changed := false
+	for i := range c.Keys {
+		key := &c.Keys[i]
+		if key.SecretRef == "" || key.APIKey != "" {
+			continue
+		}
+		apiKey, err := secretReadForBackfill(key.SecretRef)
+		if err != nil {
+			if warn != nil {
+				warn(fmt.Sprintf("warning: could not backfill local fallback for %q: %v", key.Name, err))
+			}
+			continue
+		}
+		key.APIKey = apiKey
+		changed = true
+	}
+	if !changed {
+		return c
+	}
+	if err := configSaveForBackfill(path, c); err != nil && warn != nil {
+		warn(fmt.Sprintf("warning: could not persist local API-key fallbacks: %v", err))
+	}
+	return c
+}
+
 func loadManager(path string) (*rotation.Manager, error) {
 	c, err := config.Load(path)
 	if err != nil {
@@ -125,7 +159,7 @@ func loadManager(path string) (*rotation.Manager, error) {
 
 func setRotation(path string, args []string) error {
 	if len(args) < 1 || (args[0] != "on" && args[0] != "off") {
-		return errors.New("usage: kimi-switch rotation on|off [token|request]")
+		return errors.New("usage: kimi-switch rotation on|off [sticky]")
 	}
 	mode := ""
 	if len(args) > 1 {
@@ -230,7 +264,7 @@ func importKimi(args []string) error {
 		if err := secret.Write(service, apiKey); err != nil {
 			return fmt.Errorf("store provider %q in Keychain: %w", name, err)
 		}
-		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, Enabled: true}
+		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, APIKey: apiKey, Enabled: true}
 		replaced := false
 		for i := range c.Keys {
 			if c.Keys[i].Name == name {
@@ -313,11 +347,11 @@ Commands:
   secret-set SERVICE                read one key from stdin into Keychain
   import-kimi [PATH]                import API-key providers from Kimi config.toml
   use <name>                        choose the manual active key
-  rotation on|off [token|request]    toggle automatic rotation
+  rotation on|off [sticky]           toggle sticky failover rotation
   list                              show key usage and cooldown state
   print-config                      print Kimi CLI local-proxy settings
   serve                             start the local proxy
 
-The default listener is 127.0.0.1:15721. Rotation is off by default.
-Token mode is best-effort balancing by observed/estimated token usage.`)
+The default listener is 127.0.0.1:15722. Rotation is off by default.
+Sticky mode keeps using the current key and only switches on failure. Legacy request/token modes are migrated automatically.`)
 }

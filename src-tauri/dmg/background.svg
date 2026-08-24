@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="400" viewBox="0 0 660 400">
+  <rect width="660" height="400" fill="#f4f5f7"/>
+  <rect x="0" y="0" width="660" height="3" fill="#10b981"/>
+  <text x="330" y="52" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="22" font-weight="600" fill="#17191d">安装 KimiSwitch</text>
+  <text x="330" y="78" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="13" fill="#6b7280">将 KimiSwitch 拖到 Applications</text>
+  <path d="M275 205H377" fill="none" stroke="#a3a8b1" stroke-width="4" stroke-linecap="round"/>
+  <path d="m367 193 14 12-14 12" fill="none" stroke="#10b981" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

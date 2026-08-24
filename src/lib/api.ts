@@ -1,9 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:15721";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:15722";
 const LOCAL_KEY = "local-kimi-switch";
 
 export interface RotationConfig {
   enabled: boolean;
-  mode: "request" | "token";
+  mode: "sticky";
   max_attempts: number;
   cooldown_seconds: number;
   retry_rate_limited: boolean;
@@ -28,7 +28,7 @@ export interface KeyConfig {
   notes: string;
   enabled: boolean;
   created_at: number;
-  source: "keychain" | "environment" | "inline";
+  source: "keychain" | "keychain+local" | "environment" | "inline";
   api_key_env: string;
   api_key_set: boolean;
   quota_refresh?: KeyQuotaRefresh;
@@ -72,6 +72,7 @@ export interface TakeoverStatus {
   original_provider?: string;
   affected_models: number;
   reload_required: boolean;
+  config_error?: string;
   error?: string;
 }
 

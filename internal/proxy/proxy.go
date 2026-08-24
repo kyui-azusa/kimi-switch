@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kyui-azusa/kimi-switch/internal/config"
@@ -23,9 +24,15 @@ import (
 
 const maxResponseBytes = 64 << 20
 
+var (
+	secretRead  = secret.Read
+	secretWrite = secret.Write
+)
+
 type Server struct {
-	manager *rotation.Manager
-	client  *http.Client
+	manager    *rotation.Manager
+	client     *http.Client
+	takeoverMu sync.Mutex
 }
 
 func NewServer(manager *rotation.Manager) *Server {
@@ -101,10 +108,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/status":
 		c, state := s.manager.Snapshot()
-		takeover, err := kimitakeover.Inspect(kimitakeover.DefaultPath())
-		if err != nil {
-			takeover.Error = err.Error()
-		}
+		takeover := s.takeoverStatus()
 		writeJSON(w, http.StatusOK, map[string]any{"config": publicConfig(c), "keys": state.Keys, "kimi_takeover": takeover})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/usage":
 		_, state := s.manager.Snapshot()
@@ -150,7 +154,14 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c := s.manager.Config()
+		s.takeoverMu.Lock()
 		status, err := kimitakeover.Set(kimitakeover.DefaultPath(), c.ListenAddr, c.LocalAPIKey, input.Enabled)
+		if err == nil {
+			if persistErr := s.manager.SetTakeoverPreference(input.Enabled); persistErr != nil {
+				err = fmt.Errorf("persist takeover preference: %w", persistErr)
+			}
+		}
+		s.takeoverMu.Unlock()
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -244,6 +255,46 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown admin endpoint"})
 	}
+}
+
+func (s *Server) takeoverStatus() kimitakeover.Status {
+	s.takeoverMu.Lock()
+	defer s.takeoverMu.Unlock()
+
+	c := s.manager.Config()
+	path := kimitakeover.DefaultPath()
+	status, err := kimitakeover.Inspect(path)
+	if err != nil {
+		status.Error = err.Error()
+		return status
+	}
+	desired := c.TakeoverEnabled
+	if desired == nil {
+		migrated := status.Enabled || status.AffectedModels > 0
+		if err := s.manager.SetTakeoverPreference(migrated); err != nil {
+			status.Error = "could not migrate takeover preference: " + err.Error()
+			return status
+		}
+		desired = &migrated
+	}
+
+	healthy := status.ConfigError == "" && status.AffectedModels > 0
+	if *desired && status.Enabled && healthy {
+		return status
+	}
+	if !*desired && !status.Enabled && status.AffectedModels == 0 {
+		return status
+	}
+
+	repaired, err := kimitakeover.Set(path, c.ListenAddr, c.LocalAPIKey, *desired)
+	if err != nil {
+		status.Error = "automatic takeover reconciliation failed: " + err.Error()
+		return status
+	}
+	if repaired.ConfigError != "" {
+		repaired.Error = "automatic config repair did not produce a valid config"
+	}
+	return repaired
 }
 
 type ConnectivityResult struct {
@@ -457,12 +508,12 @@ func (s *Server) handleKeyUpsert(w http.ResponseWriter, r *http.Request, origina
 	}
 	if input.APIKey != "" {
 		service := "kimi-switch/" + input.Name
-		if err := secret.Write(service, input.APIKey); err != nil {
+		if err := secretWrite(service, input.APIKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		key.SecretRef = service
-		key.APIKey = ""
+		key.APIKey = strings.TrimSpace(input.APIKey)
 		key.APIKeyEnv = ""
 	} else if key.APIKeyEnv != "" {
 		key.SecretRef = ""
@@ -497,11 +548,11 @@ func (s *Server) handleKimiImport(w http.ResponseWriter, r *http.Request) {
 	imported := []string{}
 	for name, apiKey := range providers {
 		service := "kimi-switch/" + name
-		if err := secret.Write(service, apiKey); err != nil {
+		if err := secretWrite(service, apiKey); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, Enabled: true}
+		key := config.KeyConfig{Name: name, Account: name, SecretRef: service, APIKey: apiKey, Enabled: true}
 		original := ""
 		for _, existing := range s.manager.Config().Keys {
 			if existing.Name == name {
@@ -678,6 +729,16 @@ func callerCanceled(ctx context.Context, err error) bool {
 }
 
 func resolveAPIKey(key config.KeyConfig) (string, error) {
+	if key.SecretRef != "" {
+		value, err := secretRead(key.SecretRef)
+		if err == nil {
+			return value, nil
+		}
+		if key.APIKey != "" {
+			return key.APIKey, nil
+		}
+		return "", err
+	}
 	if key.APIKey != "" {
 		return key.APIKey, nil
 	}
@@ -686,9 +747,6 @@ func resolveAPIKey(key config.KeyConfig) (string, error) {
 			return value, nil
 		}
 		return "", fmt.Errorf("environment variable %s is empty", key.APIKeyEnv)
-	}
-	if key.SecretRef != "" {
-		return secret.Read(key.SecretRef)
 	}
 	return "", fmt.Errorf("key %q has no api_key, api_key_env, or secret_ref", key.Name)
 }
@@ -835,7 +893,9 @@ func publicConfig(c config.Config) map[string]any {
 	now := time.Now().UTC()
 	for _, key := range c.Keys {
 		source := "inline"
-		if key.SecretRef != "" {
+		if key.SecretRef != "" && key.APIKey != "" {
+			source = "keychain+local"
+		} else if key.SecretRef != "" {
 			source = "keychain"
 		} else if key.APIKeyEnv != "" {
 			source = "environment"

@@ -1,11 +1,12 @@
 {
-  "listen_addr": "127.0.0.1:15721",
+  "listen_addr": "127.0.0.1:15722",
   "upstream_base_url": "https://api.kimi.com/coding/v1",
   "local_api_key": "local-kimi-switch",
   "active_key": "work",
+  "takeover_enabled": false,
   "rotation": {
     "enabled": false,
-    "mode": "request",
+    "mode": "sticky",
     "max_attempts": 2,
     "cooldown_seconds": 600,
     "retry_rate_limited": true

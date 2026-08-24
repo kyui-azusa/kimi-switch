@@ -1,22 +1,27 @@
-# Account Health And Quota Refresh
+# 账号健康、轮换与额度刷新
 
-Issue #2 adds two optional manual reference records to each account:
+## 基本原则
+
+轮换池只能选择已启用且经过验证的健康账号。失败后的时间冷却与恢复健康是两件事：冷却到期只表示允许再次探测，不代表账号已经恢复。
+
+正常请求一旦开始向客户端输出流式内容，就不能换 Key 重放，以免产生重复输出或重复计费。
+
+## 失败隔离和恢复探测
+
+账号遇到额度耗尽、限流、鉴权失败、网络失败或上游异常后，应退出正常轮换池，并记录最近状态、失败原因和下次探测时间。账号至少隔离 10 分钟；到期后执行最多输出 1 个 Token 的连通性测试，成功才恢复为健康状态。
+
+正常用户请求不能被当作恢复探测。同一账号同一时间只能有一个恢复探测；全部账号探测失败时返回“无可用账号”。该行为由 [Issue #1](https://github.com/kyui-azusa/kimi-switch/issues/1) 跟踪。
+
+## 手工额度刷新参考时间
+
+第一阶段由 [Issue #2](https://github.com/kyui-azusa/kimi-switch/issues/2) 实现。每个账号可保存两个可选记录：
 
 - `five_hour`
 - `weekly`
 
-Each persisted record stores:
+每条记录包含 `anchor_at`、`recorded_at`、`source` 和 `authoritative`。状态接口根据锚点计算 `next_refresh_at`，不把计算值写回配置。
 
-- `anchor_at`
-- `recorded_at`
-- `source`
-- `authoritative`
-
-`next_refresh_at` is computed for the status API from the persisted anchor; it is not written back to the configuration.
-
-Desktop and legacy web forms edit `anchor_at` in local time. Configuration files and API payloads store `anchor_at`, `recorded_at`, and `next_refresh_at` as UTC RFC3339 timestamps.
-
-Manual API writes use the same nested shape as the status response:
+桌面与旧版 Web 表单按本地时区编辑锚点；配置文件和 API 使用 UTC RFC3339。新的 API 请求使用嵌套结构：
 
 ```json
 {
@@ -27,17 +32,10 @@ Manual API writes use the same nested shape as the status response:
 }
 ```
 
-Omitting `quota_refresh` preserves both records. Omitting one child preserves that record, while an empty `anchor_at` clears it. The backend temporarily accepts the earlier flat field names for compatibility, but new clients should use the nested shape above.
+省略 `quota_refresh` 会保留两条记录；省略某个子项会保留该项；传入空 `anchor_at` 会清除对应记录。
 
-Phase-1 policy:
+## 数据可信度
 
-- Values are entered manually.
-- Values are for test planning and observation only.
-- The UI must present them as non-authoritative reference metadata.
-- These records do not participate in account rotation.
-- These records do not decide whether an account is healthy.
-- These records do not decide whether a quota is exhausted.
+第一阶段的值完全由用户手工填写，只用于测试规划和观察。界面必须标为“手动参考 · 非官方”，不得用来决定账号健康、额度耗尽、轮换或自动切换。
 
-Authoritative-source wording:
-
-`官方标准口径` only means a refresh field that the official upstream exposes directly and that KimiSwitch can sync with stable, reviewable provenance. Anything inferred from manual input, local observations, import timing, `Retry-After`, or error responses remains reference-only.
+只有上游直接返回、语义稳定且来源可追溯的字段才能称为“官方标准口径”。手工输入、本地观察、导入时间、`Retry-After` 和错误文本都只属于参考信息。官方来源同步由 [Issue #13](https://github.com/kyui-azusa/kimi-switch/issues/13) 跟踪。

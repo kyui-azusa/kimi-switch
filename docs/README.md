@@ -1,21 +1,25 @@
-# Documentation Notes
+# KimiSwitch 文档
 
-Issue #2 delivers the manual first phase. Issue #13 tracks official synchronization as a separate second phase.
+这里记录 KimiSwitch 已确定的运行约定和仍在推进的设计，避免实现、界面和安装包之间出现不同理解。
 
-Phase 1 is manual-only:
+## 文档索引
 
-- Record a reference time for the five-hour quota window.
-- Record a reference time for the weekly quota window.
-- Desktop and legacy web forms display and edit the reference time in the operator's local timezone.
-- Configuration files and the status API store the same values in UTC RFC3339.
-- Show the resulting next refresh time in the desktop UI.
-- Label every manual value as `手动参考 · 非官方`.
-- Do not use these values for rotation, account health, quota exhaustion judgement, or automatic switching.
+- [本地代理与端口约定](networking.md)：监听地址、CC Switch 端口避让和旧配置迁移。
+- [账号健康、轮换与额度刷新](account-health.md)：失败隔离、恢复探测和刷新周期推算。
+- [应用内更新与签名发布](updates.md)：更新检查、签名密钥、发布服务器和回滚。
+- [接管配置覆盖与自动恢复](takeover-recovery.md)：外部配置写回导致接管关闭的根因、证据和恢复机制。
 
-Authoritative wording for later phases:
+## 当前状态
 
-- `官方标准口径` only applies to a field that is directly returned by the official upstream, can be checked repeatedly with stable semantics, and has traceable provenance.
-- Manual entry, test observation, derived estimate, `imported_at`, `Retry-After`, and provider error text are all `参考信息`, not the source of truth.
-- Phase 1 only records manually entered reference data; no form value should be described as an official refresh commitment.
+| 项目 | 状态 | 跟踪位置 |
+| --- | --- | --- |
+| 默认代理端口改为 `127.0.0.1:15722` | 已实现 | [PR #3](https://github.com/kyui-azusa/kimi-switch/pull/3) |
+| 冷却到期后先探测再恢复 | 设计中 | [Issue #1](https://github.com/kyui-azusa/kimi-switch/issues/1) |
+| 手工记录并推算额度刷新时间 | 已实现第一阶段 | [Issue #2](https://github.com/kyui-azusa/kimi-switch/issues/2) |
+| 从官方来源同步额度刷新时间 | 待实现第二阶段 | [Issue #13](https://github.com/kyui-azusa/kimi-switch/issues/13) |
+| Tauri 应用内更新与签名发布 | 已实现 | [Issue #4](https://github.com/kyui-azusa/kimi-switch/issues/4) |
+| 外部配置写回后保持用户接管意图 | 已实现 | [Issue #10](https://github.com/kyui-azusa/kimi-switch/issues/10) |
 
-Detailed account-health language lives in [account-health.md](account-health.md).
+## 边界
+
+KimiSwitch 只管理用户有权使用的 Kimi Code API Key，提供本地切换、轮换、故障转移和可观测性。它不用于绕过额度、并发限制、计费规则或服务方的反滥用机制。

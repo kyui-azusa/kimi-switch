@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import packageMetadata from "../package.json";
 import {
   Activity,
   ArrowLeft,
@@ -18,6 +22,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  ScrollText,
   Sun,
   Trash2,
   Users,
@@ -26,11 +31,14 @@ import {
 import { api, type ConnectivityResult, type DailyUsage, type KeyConfig, type KeyInput, type KeyStats, type QuotaRefreshRecord, type RotationConfig, type StatusResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { changelog } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
 
 type Panel =
   | { kind: "form"; key?: KeyConfig }
   | { kind: "settings" }
+  | { kind: "updates"; update?: Update }
+  | { kind: "changelog" }
   | { kind: "import" }
   | { kind: "usage" }
   | null;
@@ -109,6 +117,7 @@ function quotaReferenceLabel(record?: QuotaRefreshRecord) {
 }
 
 function sourceLabel(key: KeyConfig) {
+  if (key.source === "keychain+local") return "系统凭据库 + 本地降级副本";
   if (key.source === "keychain") return "系统凭据库";
   if (key.source === "environment") return key.api_key_env || "环境变量";
   return "本地配置";
@@ -178,6 +187,136 @@ function FullScreenPanel({ title, subtitle, onBack, children, footer }: {
       </div>
       {footer && <footer className="flex flex-shrink-0 justify-end gap-2 border-t border-border bg-muted/20 px-6 py-4">{footer}</footer>}
     </div>
+  );
+}
+
+type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "up-to-date" | "error";
+
+function formatUpdateDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function UpdatePanel({ initialUpdate, onBack, notify }: {
+  initialUpdate?: Update;
+  onBack: () => void;
+  notify: (message: string, error?: boolean) => void;
+}) {
+  const [status, setStatus] = useState<UpdateStatus>(initialUpdate ? "available" : "idle");
+  const [update, setUpdate] = useState<Update | null>(initialUpdate || null);
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+
+  const checkForUpdate = useCallback(async () => {
+    setStatus("checking");
+    setMessage("");
+    try {
+      const next = await check();
+      setUpdate(next);
+      setStatus(next ? "available" : "up-to-date");
+      if (!next) setMessage("当前已是最新版本");
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "无法检查更新");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!initialUpdate) void checkForUpdate();
+  }, [checkForUpdate, initialUpdate]);
+
+  const install = async () => {
+    if (!update) return;
+    setStatus("downloading");
+    setProgress(0);
+    try {
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength || 0;
+          setMessage(total ? `正在下载 ${(total / 1024 / 1024).toFixed(1)} MB` : "正在下载更新");
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          setProgress(total ? Math.min(100, Math.round((downloaded / total) * 100)) : 0);
+        } else if (event.event === "Finished") {
+          setProgress(100);
+          setMessage("下载完成，准备重启应用");
+        }
+      });
+      setStatus("ready");
+      notify("更新已下载，应用将重启");
+      await relaunch();
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "更新失败，可重试");
+    }
+  };
+
+  return (
+    <FullScreenPanel title="软件更新" subtitle="通过签名校验后下载并安装新版本" onBack={onBack}>
+      <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div><h2 className="font-semibold">KimiSwitch 更新</h2><p className="mt-1 text-sm text-muted-foreground">更新不会修改账号、系统凭据或本地代理数据。</p></div>
+          <RefreshCw className={cn("h-5 w-5 text-blue-500", status === "checking" && "animate-spin")} />
+        </div>
+        {update ? (
+          <div className="mt-6 rounded-lg border border-blue-500/20 bg-blue-500/5 p-4">
+            <div className="flex items-center justify-between gap-3"><span className="text-sm font-medium">发现新版本 {update.version}</span>{update.date && <span className="text-xs text-muted-foreground">{formatUpdateDate(update.date)}</span>}</div>
+            {update.body && <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{update.body}</p>}
+            {status === "downloading" && <div className="mt-4"><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-blue-500 transition-all" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-muted-foreground">{progress ? `${progress}%` : message}</p></div>}
+            {status === "ready" && <p className="mt-3 text-sm text-emerald-600">更新已安装，正在重启。</p>}
+            {status === "error" && <p className="mt-3 text-sm text-red-600">{message}</p>}
+            {status !== "downloading" && status !== "ready" && <Button className="mt-5" onClick={() => void install()}><Download className="h-4 w-4" />下载并安装</Button>}
+          </div>
+        ) : (
+          <div className="mt-6 rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">{message || (status === "checking" ? "正在检查更新…" : "尚未检查更新")}</div>
+        )}
+        {status === "error" && <Button variant="outline" className="mt-4" onClick={() => void checkForUpdate()}><RefreshCw className="h-4 w-4" />重试</Button>}
+        {status !== "checking" && status !== "downloading" && status !== "ready" && status !== "error" && <Button variant="outline" className="mt-4" onClick={() => void checkForUpdate()}><RefreshCw className="h-4 w-4" />检查更新</Button>}
+      </section>
+    </FullScreenPanel>
+  );
+}
+
+function ChangelogPanel({ appVersion, onBack }: { appVersion: string; onBack: () => void }) {
+  const currentVersion = appVersion.replace(/^v/, "");
+  return (
+    <FullScreenPanel title="更新日志" subtitle={`当前版本 v${currentVersion}`} onBack={onBack}>
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        {changelog.map((entry, index) => {
+          const current = entry.version === currentVersion;
+          return (
+            <section
+              key={entry.version}
+              aria-current={current ? "true" : undefined}
+              className={cn(
+                "grid gap-4 border-b border-border px-5 py-6 last:border-b-0 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-6 sm:px-7",
+                current && "bg-blue-500/5",
+              )}
+            >
+              <div className="flex items-center justify-between gap-3 sm:block">
+                <div className="flex items-center gap-2">
+                  <span className={cn("text-base font-semibold tabular-nums", current && "text-blue-600 dark:text-blue-400")}>v{entry.version}</span>
+                  {current && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前版本</span>}
+                </div>
+                <time className="text-xs tabular-nums text-muted-foreground" dateTime={entry.date}>{entry.date.replaceAll("-", ".")}</time>
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-start gap-3">
+                  <span className={cn("mt-1.5 h-2 w-2 flex-shrink-0 rounded-full", index === 0 ? "bg-blue-500" : "bg-border")} />
+                  <h2 className="text-sm font-semibold leading-6 sm:text-base">{entry.title}</h2>
+                </div>
+                <ul className="mt-3 grid gap-2 pl-5 text-sm leading-6 text-muted-foreground">
+                  {entry.changes.map((change) => <li key={change} className="list-disc pl-1 marker:text-muted-foreground/60">{change}</li>)}
+                </ul>
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </FullScreenPanel>
   );
 }
 
@@ -287,13 +426,16 @@ function AccountForm({ current, onBack, onSaved, notify }: {
   );
 }
 
-function SettingsPanel({ status, onBack, onSaved, notify, dark, setDark }: {
+function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setDark, onUpdates, onChangelog }: {
   status: StatusResponse;
+  appVersion: string;
   onBack: () => void;
   onSaved: () => Promise<void>;
   notify: (message: string, error?: boolean) => void;
   dark: boolean;
   setDark: (value: boolean) => void;
+  onUpdates: () => void;
+  onChangelog: () => void;
 }) {
   const [upstream, setUpstream] = useState(status.config.upstream_base_url);
   const [rotation, setRotation] = useState<RotationConfig>({ ...status.config.rotation });
@@ -320,10 +462,10 @@ function SettingsPanel({ status, onBack, onSaved, notify, dark, setDark }: {
           </div>
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">自动轮换</h2><p className="mt-1 text-sm text-muted-foreground">按调用顺序分散请求；不读取也不声称知道账号剩余额度。</p></div><Switch checked={rotation.enabled} onCheckedChange={(enabled) => setRotation((old) => ({ ...old, enabled }))} /></div>
+          <div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">自动轮换</h2><p className="mt-1 text-sm text-muted-foreground">默认持续使用当前账号；只有额度耗尽、鉴权失败、限流或上游不可用时才切到下一个可用账号。</p></div><Switch checked={rotation.enabled} onCheckedChange={(enabled) => setRotation((old) => ({ ...old, enabled }))} /></div>
           <div className="mt-5 grid gap-5 sm:grid-cols-2">
-            <Field label="轮换模式" hint="按请求次数最直观；Token 观察根据本地已见用量做近似分散。">
-              <select className={fieldClass} value={rotation.mode} onChange={(e) => setRotation((old) => ({ ...old, mode: e.target.value as RotationConfig["mode"] }))}><option value="request">按请求次数</option><option value="token">按已观察 Token</option></select>
+            <Field label="切换策略" hint="当前账号健康时不会主动换 Key；切走后会保持在新的账号上。">
+              <input className={fieldClass} value="故障时切换" disabled />
             </Field>
             <Field label="单次最大尝试账号数"><input className={fieldClass} type="number" min={1} max={20} value={rotation.max_attempts} onChange={(e) => setRotation((old) => ({ ...old, max_attempts: Number(e.target.value) }))} /></Field>
             <Field label="失败冷却（秒）" hint="至少 600 秒；失败账号在仍有其他可用账号时不会被选择。"><input className={fieldClass} type="number" min={600} value={rotation.cooldown_seconds} onChange={(e) => setRotation((old) => ({ ...old, cooldown_seconds: Number(e.target.value) }))} /></Field>
@@ -332,6 +474,9 @@ function SettingsPanel({ status, onBack, onSaved, notify, dark, setDark }: {
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">深色模式</h2><p className="mt-1 text-sm text-muted-foreground">只影响 KimiSwitch 桌面界面。</p></div><Button variant="outline" onClick={() => setDark(!dark)}>{dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{dark ? "切换浅色" : "切换深色"}</Button></div>
+        </section>
+        <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">版本与更新</h2><p className="mt-1 text-sm text-muted-foreground">当前版本 v{appVersion}；查看版本变化或检查签名更新包。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChangelog}><ScrollText className="h-4 w-4" />更新日志</Button><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div></div>
         </section>
         <section className="rounded-xl border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
           <p>KimiSwitch 的桌面界面排布和部分 UI 组件基于 CC Switch（MIT License）调整；代理与 Kimi 配置逻辑为 KimiSwitch 实现。</p>
@@ -525,7 +670,7 @@ function AccountCard({ item, stats, active, rotationEnabled, testing, sortable, 
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">Token</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.total_tokens || stats.estimated_tokens)}</div></div>
           <div className="text-right"><div className="text-[10px] uppercase tracking-wide text-muted-foreground">失败</div><div className="mt-1 text-sm font-semibold tabular-nums">{formatNumber(stats.failures)}</div></div>
         </div>
-        <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-1.5 opacity-100 transition-opacity sm:opacity-0 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100">
+        <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-1.5 opacity-100 transition-opacity sm:pointer-events-none sm:opacity-0 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-has-[:focus-visible]:pointer-events-auto sm:group-has-[:focus-visible]:opacity-100">
           <Button size="sm" variant={active ? "secondary" : "default"} disabled={active || !item.enabled} onClick={() => onAction("use", item)} className="w-[4.5rem] px-2.5">{active ? <Check className="h-4 w-4" /> : <Play className="h-4 w-4" />}{active ? "使用中" : "启用"}</Button>
           <Button size="icon" variant="ghost" title="真实可用性测试（发送最多 1 个输出 Token）" disabled={testing} onClick={() => onAction("test", item)}><RadioTower className={cn("h-4 w-4", testing && "animate-pulse text-blue-500")} /></Button>
           <Button size="icon" variant="ghost" title="编辑" onClick={() => onAction("edit", item)}><Edit3 className="h-4 w-4" /></Button>
@@ -563,6 +708,8 @@ export default function App() {
   const [testingKeys, setTestingKeys] = useState<Set<string>>(() => new Set());
   const [deleteTarget, setDeleteTarget] = useState<KeyConfig | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [appVersion, setAppVersion] = useState(packageMetadata.version);
   const [draggedAccount, setDraggedAccount] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ name: string; edge: DropEdge } | null>(null);
   const [reordering, setReordering] = useState(false);
@@ -592,6 +739,22 @@ export default function App() {
     const timer = window.setInterval(() => void refresh(true), 5000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getVersion().then((version) => {
+      if (!cancelled) setAppVersion(version);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void check().then((update) => {
+      if (!cancelled && update) setAvailableUpdate(update);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -792,10 +955,10 @@ export default function App() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex h-16 flex-shrink-0 items-center justify-between gap-2 border-b border-border bg-background/85 px-3 backdrop-blur-md sm:px-6" data-tauri-drag-region>
-        <div className="no-drag flex min-w-0 items-center gap-1"><button className="truncate text-base font-semibold text-blue-500 transition-colors hover:text-blue-600 sm:text-xl">KimiSwitch</button><Button className="h-8 w-8" variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button><Button className="h-8 w-8" variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
+        <div className="no-drag flex min-w-0 items-center gap-1"><div className="mr-1 flex min-w-0 items-baseline gap-2"><span className="truncate text-base font-semibold text-blue-500 sm:text-xl">KimiSwitch</span><span className="hidden min-w-12 text-xs tabular-nums text-muted-foreground sm:inline">v{appVersion}</span></div><Button className="h-8 w-8" variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button>{availableUpdate && <Button className="h-8 w-8" variant="ghost" size="icon" title={`发现新版本 ${availableUpdate.version}`} onClick={() => setPanel({ kind: "updates", update: availableUpdate })}><Download className="h-4 w-4 text-blue-500" /></Button>}<Button className="h-8 w-8" variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
         <div className="no-drag flex flex-shrink-0 items-center gap-1 sm:gap-2">
           <span className="hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />代理运行中</span>
-          <div className={cn("flex items-center gap-2 rounded-lg border px-2 py-1.5 sm:px-3", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || `配置：${status.kimi_takeover.config_path}`}><span className="hidden text-xs text-muted-foreground lg:inline">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span><Switch aria-label="KimiSwitch 接管" checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
+          <div className={cn("flex items-center gap-2 rounded-lg border px-2 py-1.5 sm:px-3", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || (status.kimi_takeover.config_error && `配置异常：${status.kimi_takeover.config_error}；重新切换开关可自动修复`) || `配置：${status.kimi_takeover.config_path}`}><span className="hidden text-xs text-muted-foreground lg:inline">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span>{status.kimi_takeover.config_error && <span className="hidden text-xs text-amber-500 xl:inline">配置异常</span>}<Switch aria-label="KimiSwitch 接管" checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
           <div className="flex items-center gap-2 rounded-lg border border-border px-2 py-1.5 sm:px-3"><span className="hidden text-xs text-muted-foreground lg:inline">自动轮换</span><Switch aria-label="自动轮换" checked={status.config.rotation.enabled} onCheckedChange={toggleRotation} /></div>
           <Button size="icon" title="添加账号" className="h-8 w-8 rounded-full bg-orange-500 shadow-lg shadow-orange-500/25 hover:bg-orange-600" onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" /></Button>
         </div>
@@ -804,13 +967,13 @@ export default function App() {
       <main className="min-h-0 flex-1 overflow-y-auto px-3 py-5 sm:px-6">
         <div className="mx-auto max-w-6xl">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
-            <div><h1 className="text-2xl font-semibold tracking-tight">Kimi Code 账号</h1><p className="mt-1 text-sm text-muted-foreground">管理已授权的账号、切换当前 Key，并按调用顺序轮换。</p></div>
+            <div><h1 className="text-2xl font-semibold tracking-tight">Kimi Code 账号</h1><p className="mt-1 text-sm text-muted-foreground">管理已授权的账号、切换当前 Key，并在故障时自动切到下一个可用账号。</p></div>
             <div className="flex w-full items-center gap-2 sm:w-auto"><Button className="min-w-0 flex-1 sm:flex-none" variant="outline" title="逐个发送最多 1 个输出 Token，检测真实额度与鉴权状态" disabled={testingKeys.size > 0} onClick={() => void testAllAccounts()}><RadioTower className={cn("h-4 w-4", testingKeys.size > 0 && "animate-pulse")} /><span className="hidden sm:inline">{testingKeys.size > 0 ? `测试中 ${testingKeys.size}` : "测试全部"}</span></Button><Button className="min-w-0 flex-1 sm:flex-none" variant="outline" title="导入当前配置" onClick={() => setPanel({ kind: "import" })}><Download className="h-4 w-4" /><span className="hidden sm:inline">导入当前配置</span></Button><Button className="min-w-0 flex-1 sm:flex-none" title="添加账号" onClick={() => setPanel({ kind: "form" })}><Plus className="h-4 w-4" /><span className="hidden sm:inline">添加账号</span></Button></div>
           </div>
 
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">账号</div><div className="mt-1 text-xl font-semibold">{status.config.keys.length}</div></div>
-            <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">轮换模式</div><div className="mt-1 truncate text-sm font-semibold">{status.config.rotation.enabled ? status.config.rotation.mode === "request" ? "按请求次数" : "按 Token 观察" : "未开启"}</div></div>
+            <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">轮换模式</div><div className="mt-1 truncate text-sm font-semibold">{status.config.rotation.enabled ? "故障时切换" : "未开启"}</div></div>
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">总请求</div><div className="mt-1 text-xl font-semibold">{formatNumber(Object.values(status.keys).reduce((sum, value) => sum + value.requests, 0))}</div></div>
             <div className="rounded-xl border border-border bg-card p-4"><div className="text-xs text-muted-foreground">已观察 Token</div><div className="mt-1 text-xl font-semibold">{formatNumber(Object.values(status.keys).reduce((sum, value) => sum + value.total_tokens, 0))}</div></div>
           </div>
@@ -826,12 +989,14 @@ export default function App() {
             <div className="grid gap-3">{accounts.map((item) => <AccountCard key={item.name} item={item} stats={status.keys[item.name] || emptyStats} active={status.config.active_key === item.name} rotationEnabled={status.config.rotation.enabled} testing={testingKeys.has(item.name)} sortable={canReorder} dragging={draggedAccount === item.name} dropEdge={dropTarget?.name === item.name ? dropTarget.edge : null} onAction={action} onPointerDown={startAccountPointerDrag} onPointerMove={moveAccountPointer} onPointerUp={endAccountPointerDrag} onPointerCancel={cancelAccountPointerDrag} onMove={moveAccount} />)}</div>
           ) : <div className="rounded-lg border border-dashed border-border p-10 text-center text-sm text-muted-foreground">没有匹配的账号</div>}
 
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15721/v1</span><span>{status.config.rotation.enabled ? `轮换已开启 · ${status.config.rotation.mode === "request" ? "按请求" : "Token 观察"}` : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-muted/25 px-4 py-3 text-xs text-muted-foreground"><span>客户端地址：http://127.0.0.1:15722/v1</span><span>{status.config.rotation.enabled ? "轮换已开启 · 故障时切换" : `当前账号：${status.config.active_key || "未选择"}`}</span><span className="font-medium text-foreground/70">Powered by kyuiazusa</span></div>
         </div>
       </main>
 
       {panel?.kind === "form" && <AccountForm current={panel.key} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} />}
-      {panel?.kind === "settings" && <SettingsPanel status={status} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} />}
+      {panel?.kind === "settings" && <SettingsPanel status={status} appVersion={appVersion} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} onUpdates={() => setPanel({ kind: "updates", update: availableUpdate || undefined })} onChangelog={() => setPanel({ kind: "changelog" })} />}
+      {panel?.kind === "updates" && <UpdatePanel initialUpdate={panel.update} onBack={() => setPanel(null)} notify={notify} />}
+      {panel?.kind === "changelog" && <ChangelogPanel appVersion={appVersion} onBack={() => setPanel({ kind: "settings" })} />}
       {panel?.kind === "import" && <ImportPanel onBack={() => setPanel(null)} onImported={() => refresh(true)} notify={notify} />}
       {panel?.kind === "usage" && <UsagePanel status={status} onBack={() => setPanel(null)} />}
       {deleteTarget && (

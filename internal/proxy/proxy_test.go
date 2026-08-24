@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -14,8 +16,22 @@ import (
 	"time"
 
 	"github.com/kyui-azusa/kimi-switch/internal/config"
+	"github.com/kyui-azusa/kimi-switch/internal/kimitakeover"
 	"github.com/kyui-azusa/kimi-switch/internal/rotation"
 )
+
+const directTakeoverFixture = `default_model = "kimi-code/k3-256k"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+api_key = "secret"
+base_url = "https://api.kimi.com/coding/v1"
+
+[models."kimi-code/k3-256k"]
+provider = "managed:kimi-code"
+model = "k3-256k"
+max_context_size = 262144
+`
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -72,7 +88,7 @@ func TestProxyFailsOverAfterRateLimit(t *testing.T) {
 	c.LocalAPIKey = "local"
 	c.ActiveKey = "first"
 	c.Rotation.Enabled = true
-	c.Rotation.Mode = "token"
+	c.Rotation.Mode = "sticky"
 	c.Rotation.MaxAttempts = 2
 	c.Keys = []config.KeyConfig{
 		{Name: "first", Enabled: true, APIKey: "first-key"},
@@ -275,6 +291,275 @@ func TestDesktopCORS(t *testing.T) {
 	}
 }
 
+func TestStatusAutoRepairsDuplicateTakeoverProvider(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	broken := `default_model = "kimi-code/k3-256k"
+
+[providers."managed:kimi-code"]
+type = "kimi"
+api_key = "secret"
+base_url = "https://api.kimi.com/coding/v1"
+
+[providers.kimi-switch-local]
+type = "kimi"
+api_key = "local"
+base_url = "http://127.0.0.1:15722/v1"
+
+[models."kimi-code/k3-256k"]
+provider = "kimi-switch-local"
+model = "k3-256k"
+max_context_size = 262144
+
+# >>> KimiSwitch managed provider
+# original_provider = "managed:kimi-code"
+[providers."kimi-switch-local"]
+type = "kimi"
+api_key = "local"
+base_url = "http://127.0.0.1:15722/v1"
+# <<< KimiSwitch managed provider
+`
+	configPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	status, err := kimitakeover.Inspect(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ConfigError != "" || !status.Enabled {
+		t.Fatalf("takeover was not repaired: %+v", status)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(content), "[providers."); got != 2 {
+		t.Fatalf("provider table count = %d, config:\n%s", got, content)
+	}
+}
+
+func TestStatusRestoresDesiredTakeoverAfterExternalConfigRewrite(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	desired := true
+	c.TakeoverEnabled = &desired
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Enabled || status.AffectedModels != 1 || status.ConfigError != "" {
+		t.Fatalf("takeover was not restored after external rewrite: %+v", status)
+	}
+}
+
+func TestStatusMigratesLegacyTakeoverPreference(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	loaded, err := config.Load(appConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.TakeoverEnabled == nil || !*loaded.TakeoverEnabled {
+		t.Fatalf("migrated takeover preference = %v", loaded.TakeoverEnabled)
+	}
+}
+
+func TestExplicitDisableRemainsAuthoritative(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := kimitakeover.Set(kimiConfigPath, "127.0.0.1:15722", "local", true)
+	if err != nil || !managed.Enabled {
+		t.Fatalf("initial takeover failed: status=%+v err=%v", managed, err)
+	}
+	managedContent, err := os.ReadFile(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	desired := false
+	c.TakeoverEnabled = &desired
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetTakeoverPreference(false); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit disable was not applied: %+v", status)
+	}
+
+	if err := os.WriteFile(kimiConfigPath, managedContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := config.Load(appConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := rotation.NewManager(persisted, appConfigPath, filepath.Join(temp, "state-restarted.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server = NewServer(restarted)
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	status, err = kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit disable was lost after restart: %+v", status)
+	}
+}
+
+func TestTakeoverEndpointPersistsUserPreference(t *testing.T) {
+	temp := t.TempDir()
+	kimiHome := filepath.Join(temp, "kimi-code")
+	if err := os.MkdirAll(kimiHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", kimiHome)
+	kimiConfigPath := filepath.Join(kimiHome, "config.toml")
+	if err := os.WriteFile(kimiConfigPath, []byte(directTakeoverFixture), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := config.Default()
+	appConfigPath := filepath.Join(temp, "config.json")
+	manager, err := rotation.NewManager(c, appConfigPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	setTakeover := func(enabled bool) {
+		t.Helper()
+		body := strings.NewReader(fmt.Sprintf(`{"enabled":%t}`, enabled))
+		request := httptest.NewRequest(http.MethodPut, "/api/kimi/takeover", body)
+		request.Header.Set("Authorization", "Bearer "+c.LocalAPIKey)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("set takeover %t: status = %d, body = %s", enabled, response.Code, response.Body.String())
+		}
+		loaded, err := config.Load(appConfigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.TakeoverEnabled == nil || *loaded.TakeoverEnabled != enabled {
+			t.Fatalf("persisted takeover preference = %v, want %t", loaded.TakeoverEnabled, enabled)
+		}
+	}
+
+	setTakeover(true)
+	setTakeover(false)
+	status, err := kimitakeover.Inspect(kimiConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Enabled || status.AffectedModels != 0 {
+		t.Fatalf("explicit endpoint disable did not restore direct mode: %+v", status)
+	}
+}
+
 func TestParseUsageIncludesCacheAndReasoningBreakdown(t *testing.T) {
 	usage := parseUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":30},"completion_tokens_details":{"reasoning_tokens":20}}}`))
 	if !usage.Known || usage.InputTokens != 100 || usage.OutputTokens != 50 || usage.TotalTokens != 150 {
@@ -416,6 +701,139 @@ func TestDeleteActiveKeyPersistsToIsolatedConfigAndSelectsNext(t *testing.T) {
 	}
 }
 
+func TestResolveAPIKeyPrefersKeychainWhenAvailable(t *testing.T) {
+	originalRead := secretRead
+	defer func() { secretRead = originalRead }()
+	secretRead = func(string) (string, error) { return "from-keychain", nil }
+
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", SecretRef: "kimi-switch/work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-keychain" {
+		t.Fatalf("api key = %q, want from-keychain", got)
+	}
+}
+
+func TestResolveAPIKeyFallsBackToLocalCopyWhenKeychainFails(t *testing.T) {
+	originalRead := secretRead
+	defer func() { secretRead = originalRead }()
+	secretRead = func(string) (string, error) { return "", errors.New("broken pipe") }
+
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", SecretRef: "kimi-switch/work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-local" {
+		t.Fatalf("api key = %q, want from-local", got)
+	}
+}
+
+func TestResolveAPIKeySupportsLocalOnlyConfig(t *testing.T) {
+	got, err := resolveAPIKey(config.KeyConfig{Name: "work", APIKey: "from-local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "from-local" {
+		t.Fatalf("api key = %q, want from-local", got)
+	}
+}
+
+func TestPublicConfigMarksKeychainLocalFallbackWithoutLeakingAPIKey(t *testing.T) {
+	public := publicConfig(config.Config{
+		Keys: []config.KeyConfig{
+			{Name: "work", SecretRef: "kimi-switch/work", APIKey: "secret-value", Enabled: true},
+			{Name: "env", APIKeyEnv: "KIMI_ENV", Enabled: true},
+			{Name: "local", APIKey: "local-only", Enabled: true},
+		},
+	})
+	keysAny, ok := public["keys"].([]map[string]any)
+	if !ok || len(keysAny) != 3 {
+		t.Fatalf("unexpected public keys payload: %#v", public["keys"])
+	}
+	if keysAny[0]["source"] != "keychain+local" || keysAny[1]["source"] != "environment" || keysAny[2]["source"] != "inline" {
+		t.Fatalf("unexpected sources: %#v", keysAny)
+	}
+	if _, ok := keysAny[0]["api_key"]; ok {
+		t.Fatal("public config leaked api_key")
+	}
+}
+
+func TestHandleKeyUpsertStoresKeychainAndLocalFallback(t *testing.T) {
+	originalWrite := secretWrite
+	defer func() { secretWrite = originalWrite }()
+	writes := map[string]string{}
+	secretWrite = func(service, value string) error {
+		writes[service] = value
+		return nil
+	}
+
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	manager, err := rotation.NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	body := `{"name":"tyx","account":"tyx","api_key":"sk-123","enabled":true}`
+	request := httptest.NewRequest(http.MethodPost, "/api/keys", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer local")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if writes["kimi-switch/tyx"] != "sk-123" {
+		t.Fatalf("keychain writes = %#v", writes)
+	}
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Keys) != 1 || persisted.Keys[0].SecretRef != "kimi-switch/tyx" || persisted.Keys[0].APIKey != "sk-123" {
+		t.Fatalf("unexpected persisted key: %+v", persisted.Keys)
+	}
+}
+
+func TestHandleKimiImportStoresKeychainAndLocalFallback(t *testing.T) {
+	originalWrite := secretWrite
+	defer func() { secretWrite = originalWrite }()
+	secretWrite = func(string, string) error { return nil }
+
+	temp := t.TempDir()
+	configPath := filepath.Join(temp, "config.json")
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	manager, err := rotation.NewManager(c, configPath, filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+
+	kimiConfig := filepath.Join(temp, "kimi.toml")
+	if err := os.WriteFile(kimiConfig, []byte("[providers.work]\napi_key = \"sk-imported\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"path":"` + kimiConfig + `"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/import/kimi", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer local")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	persisted, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Keys) != 1 || persisted.Keys[0].SecretRef != "kimi-switch/work" || persisted.Keys[0].APIKey != "sk-imported" {
+		t.Fatalf("unexpected persisted key: %+v", persisted.Keys)
+	}
+}
+
 func TestReorderKeysAPIReordersAndPersists(t *testing.T) {
 	temp := t.TempDir()
 	configPath := filepath.Join(temp, "config.json")
@@ -439,7 +857,6 @@ func TestReorderKeysAPIReordersAndPersists(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-
 	var body map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -447,7 +864,6 @@ func TestReorderKeysAPIReordersAndPersists(t *testing.T) {
 	if ok, _ := body["ok"].(bool); !ok {
 		t.Fatalf("unexpected body: %+v", body)
 	}
-
 	persisted, err := config.Load(configPath)
 	if err != nil {
 		t.Fatal(err)

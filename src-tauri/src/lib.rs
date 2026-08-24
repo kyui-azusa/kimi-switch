@@ -93,14 +93,16 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 fn proxy_is_running() -> bool {
-    let address: SocketAddr = "127.0.0.1:15721".parse().expect("valid proxy address");
+    let address: SocketAddr = "127.0.0.1:15722".parse().expect("valid proxy address");
     TcpStream::connect_timeout(&address, Duration::from_millis(250)).is_ok()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ProxyProcess(Mutex::new(None)))
         .setup(|app| {
             setup_tray(app)?;

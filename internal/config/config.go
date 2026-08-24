@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	DefaultListenAddr             = "127.0.0.1:15721"
+	DefaultListenAddr             = "127.0.0.1:15722"
+	LegacyDefaultListenAddr       = "127.0.0.1:15721"
 	DefaultUpstreamBase           = "https://api.kimi.com/coding/v1"
 	DefaultLocalAPIKey            = "local-kimi-switch"
 	DefaultFailureCooldownSeconds = 600
+	RotationModeSticky            = "sticky"
 	QuotaRefreshSourceManual      = "manual_reference"
 )
 
@@ -22,10 +24,12 @@ const (
 // owns routing state here; the optional takeover feature only edits marked
 // provider routing in Kimi's config and can restore the original mapping.
 type Config struct {
-	ListenAddr      string         `json:"listen_addr"`
-	UpstreamBaseURL string         `json:"upstream_base_url"`
-	LocalAPIKey     string         `json:"local_api_key"`
-	ActiveKey       string         `json:"active_key"`
+	ListenAddr      string `json:"listen_addr"`
+	UpstreamBaseURL string `json:"upstream_base_url"`
+	LocalAPIKey     string `json:"local_api_key"`
+	ActiveKey       string `json:"active_key"`
+	// nil identifies an older config whose preference must be migrated from config.toml.
+	TakeoverEnabled *bool          `json:"takeover_enabled,omitempty"`
 	Rotation        RotationConfig `json:"rotation"`
 	Keys            []KeyConfig    `json:"keys"`
 	StatePath       string         `json:"state_path,omitempty"`
@@ -33,7 +37,7 @@ type Config struct {
 
 type RotationConfig struct {
 	Enabled          bool   `json:"enabled"`
-	Mode             string `json:"mode"` // token or request
+	Mode             string `json:"mode"` // sticky; request/token are legacy aliases
 	MaxAttempts      int    `json:"max_attempts"`
 	CooldownSeconds  int    `json:"cooldown_seconds"`
 	RetryRateLimited bool   `json:"retry_rate_limited"`
@@ -70,7 +74,7 @@ func Default() Config {
 		LocalAPIKey:     DefaultLocalAPIKey,
 		Rotation: RotationConfig{
 			Enabled:          false,
-			Mode:             "request",
+			Mode:             RotationModeSticky,
 			MaxAttempts:      2,
 			CooldownSeconds:  DefaultFailureCooldownSeconds,
 			RetryRateLimited: true,
@@ -80,18 +84,17 @@ func Default() Config {
 }
 
 func (c *Config) Normalize() error {
-	if strings.TrimSpace(c.ListenAddr) == "" {
+	if strings.TrimSpace(c.ListenAddr) == "" || strings.TrimSpace(c.ListenAddr) == LegacyDefaultListenAddr {
 		c.ListenAddr = DefaultListenAddr
 	}
 	if strings.TrimSpace(c.UpstreamBaseURL) == "" {
 		c.UpstreamBaseURL = DefaultUpstreamBase
 	}
-	if c.Rotation.Mode == "" {
-		c.Rotation.Mode = "request"
+	mode, err := NormalizeRotationMode(c.Rotation.Mode)
+	if err != nil {
+		return err
 	}
-	if c.Rotation.Mode != "token" && c.Rotation.Mode != "request" {
-		return fmt.Errorf("rotation.mode must be token or request, got %q", c.Rotation.Mode)
-	}
+	c.Rotation.Mode = mode
 	if c.Rotation.MaxAttempts < 1 {
 		c.Rotation.MaxAttempts = 2
 	}
@@ -123,6 +126,15 @@ func (c *Config) Normalize() error {
 		c.ActiveKey = c.Keys[0].Name
 	}
 	return nil
+}
+
+func NormalizeRotationMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "request", "token", RotationModeSticky:
+		return RotationModeSticky, nil
+	default:
+		return "", fmt.Errorf("rotation.mode must be sticky, got %q", mode)
+	}
 }
 
 func CloneQuotaRefresh(value *QuotaRefreshConfig) *QuotaRefreshConfig {
@@ -279,7 +291,14 @@ func Save(path string, c Config) error {
 
 func Ensure(path string) (Config, error) {
 	if _, err := os.Stat(path); err == nil {
-		return Load(path)
+		c, err := Load(path)
+		if err != nil {
+			return Config{}, err
+		}
+		if err := Save(path, c); err != nil {
+			return Config{}, err
+		}
+		return c, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Config{}, err
 	}
