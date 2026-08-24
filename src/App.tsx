@@ -22,6 +22,7 @@ import {
   Search,
   Settings,
   ShieldCheck,
+  ScrollText,
   Sun,
   Trash2,
   Users,
@@ -30,12 +31,14 @@ import {
 import { api, type ConnectivityResult, type DailyUsage, type KeyConfig, type KeyInput, type KeyStats, type QuotaRefreshRecord, type RotationConfig, type StatusResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { changelog } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
 
 type Panel =
   | { kind: "form"; key?: KeyConfig }
   | { kind: "settings" }
   | { kind: "updates"; update?: Update }
+  | { kind: "changelog" }
   | { kind: "import" }
   | { kind: "usage" }
   | null;
@@ -277,6 +280,46 @@ function UpdatePanel({ initialUpdate, onBack, notify }: {
   );
 }
 
+function ChangelogPanel({ appVersion, onBack }: { appVersion: string; onBack: () => void }) {
+  const currentVersion = appVersion.replace(/^v/, "");
+  return (
+    <FullScreenPanel title="更新日志" subtitle={`当前版本 v${currentVersion}`} onBack={onBack}>
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+        {changelog.map((entry, index) => {
+          const current = entry.version === currentVersion;
+          return (
+            <section
+              key={entry.version}
+              aria-current={current ? "true" : undefined}
+              className={cn(
+                "grid gap-4 border-b border-border px-5 py-6 last:border-b-0 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-6 sm:px-7",
+                current && "bg-blue-500/5",
+              )}
+            >
+              <div className="flex items-center justify-between gap-3 sm:block">
+                <div className="flex items-center gap-2">
+                  <span className={cn("text-base font-semibold tabular-nums", current && "text-blue-600 dark:text-blue-400")}>v{entry.version}</span>
+                  {current && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前版本</span>}
+                </div>
+                <time className="text-xs tabular-nums text-muted-foreground" dateTime={entry.date}>{entry.date.replaceAll("-", ".")}</time>
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-start gap-3">
+                  <span className={cn("mt-1.5 h-2 w-2 flex-shrink-0 rounded-full", index === 0 ? "bg-blue-500" : "bg-border")} />
+                  <h2 className="text-sm font-semibold leading-6 sm:text-base">{entry.title}</h2>
+                </div>
+                <ul className="mt-3 grid gap-2 pl-5 text-sm leading-6 text-muted-foreground">
+                  {entry.changes.map((change) => <li key={change} className="list-disc pl-1 marker:text-muted-foreground/60">{change}</li>)}
+                </ul>
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </FullScreenPanel>
+  );
+}
+
 function AccountForm({ current, onBack, onSaved, notify }: {
   current?: KeyConfig;
   onBack: () => void;
@@ -383,7 +426,7 @@ function AccountForm({ current, onBack, onSaved, notify }: {
   );
 }
 
-function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setDark, onUpdates }: {
+function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setDark, onUpdates, onChangelog }: {
   status: StatusResponse;
   appVersion: string;
   onBack: () => void;
@@ -392,6 +435,7 @@ function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setD
   dark: boolean;
   setDark: (value: boolean) => void;
   onUpdates: () => void;
+  onChangelog: () => void;
 }) {
   const [upstream, setUpstream] = useState(status.config.upstream_base_url);
   const [rotation, setRotation] = useState<RotationConfig>({ ...status.config.rotation });
@@ -432,7 +476,7 @@ function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setD
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">深色模式</h2><p className="mt-1 text-sm text-muted-foreground">只影响 KimiSwitch 桌面界面。</p></div><Button variant="outline" onClick={() => setDark(!dark)}>{dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{dark ? "切换浅色" : "切换深色"}</Button></div>
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">软件更新</h2><p className="mt-1 text-sm text-muted-foreground">当前版本 v{appVersion}；检查签名更新包并在安装后自动重启。</p></div><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">版本与更新</h2><p className="mt-1 text-sm text-muted-foreground">当前版本 v{appVersion}；查看版本变化或检查签名更新包。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChangelog}><ScrollText className="h-4 w-4" />更新日志</Button><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div></div>
         </section>
         <section className="rounded-xl border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
           <p>KimiSwitch 的桌面界面排布和部分 UI 组件基于 CC Switch（MIT License）调整；代理与 Kimi 配置逻辑为 KimiSwitch 实现。</p>
@@ -950,8 +994,9 @@ export default function App() {
       </main>
 
       {panel?.kind === "form" && <AccountForm current={panel.key} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} />}
-      {panel?.kind === "settings" && <SettingsPanel status={status} appVersion={appVersion} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} onUpdates={() => setPanel({ kind: "updates", update: availableUpdate || undefined })} />}
+      {panel?.kind === "settings" && <SettingsPanel status={status} appVersion={appVersion} onBack={() => setPanel(null)} onSaved={() => refresh(true)} notify={notify} dark={dark} setDark={setDark} onUpdates={() => setPanel({ kind: "updates", update: availableUpdate || undefined })} onChangelog={() => setPanel({ kind: "changelog" })} />}
       {panel?.kind === "updates" && <UpdatePanel initialUpdate={panel.update} onBack={() => setPanel(null)} notify={notify} />}
+      {panel?.kind === "changelog" && <ChangelogPanel appVersion={appVersion} onBack={() => setPanel({ kind: "settings" })} />}
       {panel?.kind === "import" && <ImportPanel onBack={() => setPanel(null)} onImported={() => refresh(true)} notify={notify} />}
       {panel?.kind === "usage" && <UsagePanel status={status} onBack={() => setPanel(null)} />}
       {deleteTarget && (
