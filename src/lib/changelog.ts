@@ -7,6 +7,16 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.2.8",
+    date: "2026-08-26",
+    title: "403 自动换号重试",
+    changes: [
+      "自动轮换开启时，当前账号返回 403 后会切换到另一个健康账号，并原样重发当前请求一次。",
+      "重发请求无论成功或失败都不会继续尝试第三个账号，避免形成重复请求链。",
+      "没有其他健康账号时直接返回原始 403，不会再次使用刚失败的账号。",
+    ],
+  },
+  {
     version: "0.2.7",
     date: "2026-08-24",
     title: "后台运行与状态判断更可靠",
