@@ -170,6 +170,156 @@ func TestProxyFailsOverAfterBillingCycleQuotaError(t *testing.T) {
 	}
 }
 
+func TestProxyReplaysGenericForbiddenOnceWithNextAccount(t *testing.T) {
+	var calls atomic.Int32
+	var requestBodies []string
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+		}
+		requestBodies = append(requestBodies, string(body))
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if calls.Load() == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"forbidden"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 4
+	c.ActiveKey = "first"
+	c.Keys = []config.KeyConfig{
+		{Name: "first", Enabled: true, APIKey: "first-key"},
+		{Name: "second", Enabled: true, APIKey: "second-key"},
+		{Name: "third", Enabled: true, APIKey: "third-key"},
+	}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+
+	requestBody := `{"model":"kimi-for-coding","messages":[{"role":"user","content":"retry me"}]}`
+	req, err := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("status=%d calls=%d, want status=200 calls=2", response.StatusCode, calls.Load())
+	}
+	if got := strings.Join(authorizations, ","); got != "Bearer first-key,Bearer second-key" {
+		t.Fatalf("upstream authorizations = %q", got)
+	}
+	if len(requestBodies) != 2 || requestBodies[0] != requestBody || requestBodies[1] != requestBody {
+		t.Fatalf("request body was not preserved: %#v", requestBodies)
+	}
+	_, state := manager.Snapshot()
+	if state.Keys["first"].LastCheckStatus != "forbidden" || !state.Keys["first"].CooldownUntil.After(time.Now().UTC()) {
+		t.Fatalf("first account was not cooled after 403: %+v", state.Keys["first"])
+	}
+}
+
+func TestProxyStopsAfterSingleForbiddenReplay(t *testing.T) {
+	var calls atomic.Int32
+	var authorizations []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"forbidden"}}`))
+	}))
+	defer upstream.Close()
+
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 4
+	c.ActiveKey = "first"
+	c.Keys = []config.KeyConfig{
+		{Name: "first", Enabled: true, APIKey: "first-key"},
+		{Name: "second", Enabled: true, APIKey: "second-key"},
+		{Name: "third", Enabled: true, APIKey: "third-key"},
+	}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden || calls.Load() != 2 {
+		t.Fatalf("status=%d calls=%d, want status=403 calls=2", response.StatusCode, calls.Load())
+	}
+	if got := strings.Join(authorizations, ","); got != "Bearer first-key,Bearer second-key" {
+		t.Fatalf("upstream authorizations = %q", got)
+	}
+}
+
+func TestProxyDoesNotReplayForbiddenWithoutAnotherHealthyAccount(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"message":"forbidden"}}`))
+	}))
+	defer upstream.Close()
+
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 4
+	c.ActiveKey = "only"
+	c.Keys = []config.KeyConfig{{Name: "only", Enabled: true, APIKey: "only-key"}}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusForbidden || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d, want status=403 calls=1", response.StatusCode, calls.Load())
+	}
+}
+
 func TestCanceledUpstreamRequestDoesNotCoolAccountOrFailOver(t *testing.T) {
 	c := config.Default()
 	c.LocalAPIKey = "local"

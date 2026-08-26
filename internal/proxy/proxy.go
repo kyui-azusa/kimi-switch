@@ -654,6 +654,17 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 			s.manager.Finish(selected, response.StatusCode, usage, nil)
 			accountStatus, accountMessage := classifyProviderFailure(response.StatusCode, lastBody)
 			s.manager.SetAccountStatus(selected.Key.Name, accountStatus, accountMessage)
+			if response.StatusCode == http.StatusForbidden {
+				if s.manager.AvailableKeyCount() == 0 {
+					writeHeaders(w, lastHeaders)
+					w.WriteHeader(lastStatus)
+					_, _ = w.Write(lastBody)
+					return
+				}
+				// A 403 may be account-specific. Replay on one healthy account,
+				// but never continue through the rest of the rotation pool.
+				maxAttempts = attempt + 1
+			}
 			continue
 		}
 
