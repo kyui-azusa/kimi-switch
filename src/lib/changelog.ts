@@ -7,6 +7,16 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.2.9",
+    date: "2026-09-01",
+    title: "网络错误不再影响账号状态",
+    changes: [
+      "代理、TUN 或上游连接中断时，不再把网络故障误记为账号失败或触发 10 分钟冷却。",
+      "网络故障不会切换到其他账号重复请求，客户端会收到明确的 502 上游网络错误。",
+      "流式响应中途断开时同样不会污染账号健康状态。",
+    ],
+  },
+  {
     version: "0.2.8",
     date: "2026-08-26",
     title: "403 自动换号重试",

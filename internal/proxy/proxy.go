@@ -640,9 +640,9 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 				s.manager.Cancel(selected)
 				return
 			}
-			s.manager.Finish(selected, 0, rotation.Usage{}, doErr)
-			lastErr = doErr
-			continue
+			s.manager.Cancel(selected)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "upstream network error: " + doErr.Error()})
+			return
 		}
 
 		lastStatus = response.StatusCode
@@ -732,7 +732,11 @@ func (s *Server) streamResponse(ctx context.Context, w http.ResponseWriter, resp
 		s.manager.Cancel(selected)
 		return
 	}
-	s.manager.Finish(selected, response.StatusCode, usage, streamErr)
+	if streamErr != nil {
+		s.manager.Cancel(selected)
+		return
+	}
+	s.manager.Finish(selected, response.StatusCode, usage, nil)
 }
 
 func callerCanceled(ctx context.Context, err error) bool {
