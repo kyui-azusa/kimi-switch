@@ -43,6 +43,18 @@ type canceledStreamWriter struct {
 	header http.Header
 }
 
+type errorReadCloser struct {
+	err error
+}
+
+func (r errorReadCloser) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func (errorReadCloser) Close() error {
+	return nil
+}
+
 func (w *canceledStreamWriter) Header() http.Header {
 	return w.header
 }
@@ -320,6 +332,48 @@ func TestProxyDoesNotReplayForbiddenWithoutAnotherHealthyAccount(t *testing.T) {
 	}
 }
 
+func TestUpstreamNetworkErrorDoesNotRotateOrCoolAccount(t *testing.T) {
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 2
+	c.ActiveKey = "first"
+	c.Keys = []config.KeyConfig{
+		{Name: "first", Enabled: true, APIKey: "first-key"},
+		{Name: "second", Enabled: true, APIKey: "second-key"},
+	}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(manager)
+	var calls atomic.Int32
+	server.client.Transport = roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, errors.New("proxy tunnel reset")
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	request.Header.Set("Authorization", "Bearer local")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", recorder.Code)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls.Load())
+	}
+	_, state := manager.Snapshot()
+	first := state.Keys["first"]
+	if first.LastCheckStatus != "" || first.LastError != "" || !first.CooldownUntil.IsZero() || first.InFlight != 0 || first.ReservedTokens != 0 || first.Requests != 0 || first.Failures != 0 {
+		t.Fatalf("network error changed account health: %+v", first)
+	}
+	if state.Keys["second"].Requests != 0 {
+		t.Fatalf("network error rotated to second account: %+v", state.Keys["second"])
+	}
+}
+
 func TestCanceledUpstreamRequestDoesNotCoolAccountOrFailOver(t *testing.T) {
 	c := config.Default()
 	c.LocalAPIKey = "local"
@@ -383,6 +437,34 @@ func TestCanceledStreamWriteDoesNotCoolAccount(t *testing.T) {
 	stats := state.Keys["a"]
 	if stats.InFlight != 0 || stats.ReservedTokens != 0 || stats.Failures != 0 || !stats.CooldownUntil.IsZero() || stats.LastCheckStatus == "quota_exhausted" {
 		t.Fatalf("stream cancellation changed account health: %+v", stats)
+	}
+}
+
+func TestUpstreamStreamErrorDoesNotChangeAccountHealth(t *testing.T) {
+	c := config.Default()
+	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}}
+	c.ActiveKey = "a"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := manager.Select(100, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       errorReadCloser{err: errors.New("upstream stream reset")},
+	}
+
+	NewServer(manager).streamResponse(context.Background(), httptest.NewRecorder(), response, selected)
+
+	_, state := manager.Snapshot()
+	stats := state.Keys["a"]
+	if stats.InFlight != 0 || stats.ReservedTokens != 0 || stats.Requests != 0 || stats.Failures != 0 || !stats.CooldownUntil.IsZero() || stats.LastCheckStatus != "" || stats.LastError != "" {
+		t.Fatalf("stream network error changed account health: %+v", stats)
 	}
 }
 
