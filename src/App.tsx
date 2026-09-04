@@ -130,6 +130,7 @@ function statusOf(key: KeyConfig, stats: KeyStats) {
   if (stats.last_check_status === "invalid_key") return { label: "Key 无效", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "account_disabled") return { label: "账号异常", color: "bg-red-500", text: "text-red-600" };
   if (stats.last_check_status === "forbidden") return { label: "权限不足", color: "bg-red-500", text: "text-red-600" };
+  if (stats.last_check_status === "upstream_overloaded") return { label: "上游繁忙 · 稍后重试", color: "bg-amber-500", text: "text-amber-600" };
   if (stats.last_check_status === "rate_limited") return { label: `限流冷却 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
   if (stats.last_check_status === "network_error") return { label: `网络失败 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };
   if (stats.last_check_status === "upstream_error") return { label: `上游异常 · ${cooldownMinutes || 1} 分钟`, color: "bg-amber-500", text: "text-amber-600" };

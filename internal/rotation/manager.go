@@ -408,6 +408,20 @@ func (m *Manager) Select(estimate int64, attempt int) (Selected, error) {
 }
 
 func (m *Manager) Finish(selected Selected, status int, usage Usage, requestError error) {
+	m.finish(selected, status, usage, requestError, true, "")
+}
+
+// FinishTransient records a failed upstream attempt without making the
+// account unavailable. It is used for provider-wide transient conditions,
+// such as an overloaded engine, that do not indicate an unhealthy account.
+func (m *Manager) FinishTransient(selected Selected, status int, usage Usage, statusName, reason string) {
+	if prefix := fmt.Sprintf("HTTP %d: ", status); strings.HasPrefix(reason, prefix) {
+		reason = strings.TrimPrefix(reason, prefix)
+	}
+	m.finish(selected, status, usage, errors.New(reason), false, statusName)
+}
+
+func (m *Manager) finish(selected Selected, status int, usage Usage, requestError error, cooldown bool, statusName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stats := m.state.Keys[selected.Key.Name]
@@ -427,8 +441,15 @@ func (m *Manager) Finish(selected Selected, status int, usage Usage, requestErro
 		daily.Failures++
 		stats.LastError = formatError(status, requestError)
 		stats.LastCheckAt = time.Now().UTC()
-		stats.LastCheckStatus = basicFailureStatus(status, requestError)
-		stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
+		if statusName == "" {
+			statusName = basicFailureStatus(status, requestError)
+		}
+		stats.LastCheckStatus = statusName
+		if cooldown {
+			stats.CooldownUntil = time.Now().UTC().Add(time.Duration(m.cfg.Rotation.CooldownSeconds) * time.Second)
+		} else {
+			stats.CooldownUntil = time.Time{}
+		}
 	} else {
 		stats.Successes++
 		daily.Successes++
@@ -509,6 +530,11 @@ func (m *Manager) RecordConnectivity(name, status string, latency time.Duration,
 	if status == "ok" {
 		stats.LastCheckStatus = "ok"
 		stats.LastError = ""
+		stats.CooldownUntil = time.Time{}
+	} else if status == "upstream_overloaded" {
+		// Provider-wide overload is transient and must not cool down an account.
+		stats.LastCheckStatus = status
+		stats.LastError = strings.TrimSpace(reason)
 		stats.CooldownUntil = time.Time{}
 	} else {
 		stats.LastCheckStatus = status

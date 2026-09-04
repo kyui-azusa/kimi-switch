@@ -24,6 +24,12 @@ import (
 
 const maxResponseBytes = 64 << 20
 
+const (
+	maxOverloadRetries = 2
+)
+
+var overloadRetryDelay = 2 * time.Second
+
 var (
 	secretRead  = secret.Read
 	secretWrite = secret.Write
@@ -388,8 +394,11 @@ func classifyProviderFailure(httpStatus int, body []byte) (string, string) {
 		"exceeded_current_quota", "insufficient quota", "insufficient balance",
 		"quota exhausted", "额度用尽", "额度不足", "余额不足", "达到上限",
 	)
+	overloaded := containsAny(lower, "engine_overloaded", "engine overloaded", "currently overloaded")
 	status := "failed"
 	switch {
+	case overloaded && (httpStatus == 429 || httpStatus >= 500):
+		status = "upstream_overloaded"
 	case quota && (httpStatus == 402 || httpStatus == 403 || httpStatus == 429):
 		status = "quota_exhausted"
 	case httpStatus == 401:
@@ -607,6 +616,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	var lastHeaders http.Header
 	var lastBody []byte
 	var lastErr error
+	overloadRetries := 0
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		selected, selectErr := s.manager.Select(estimate, attempt)
@@ -647,25 +657,50 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 
 		lastStatus = response.StatusCode
 		lastHeaders = response.Header.Clone()
-		if response.StatusCode >= 400 && s.manager.CanRetry(response.StatusCode) && attempt < maxAttempts {
+		if response.StatusCode >= 400 {
 			lastBody, _ = io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
 			response.Body.Close()
 			usage := parseUsage(lastBody)
-			s.manager.Finish(selected, response.StatusCode, usage, nil)
 			accountStatus, accountMessage := classifyProviderFailure(response.StatusCode, lastBody)
-			s.manager.SetAccountStatus(selected.Key.Name, accountStatus, accountMessage)
-			if response.StatusCode == http.StatusForbidden {
-				if s.manager.AvailableKeyCount() == 0 {
-					writeHeaders(w, lastHeaders)
-					w.WriteHeader(lastStatus)
-					_, _ = w.Write(lastBody)
-					return
+			if accountStatus == "upstream_overloaded" {
+				// Engine overload is provider-wide. Retry the same request after a
+				// short backoff instead of cooling down the selected account.
+				s.manager.FinishTransient(selected, response.StatusCode, usage, accountStatus, accountMessage)
+				if overloadRetries < maxOverloadRetries {
+					overloadRetries++
+					if !waitForRetry(r.Context(), overloadRetryDelay) {
+						return
+					}
+					attempt--
+					continue
 				}
-				// A 403 may be account-specific. Replay on one healthy account,
-				// but never continue through the rest of the rotation pool.
-				maxAttempts = attempt + 1
+				writeHeaders(w, lastHeaders)
+				w.WriteHeader(lastStatus)
+				_, _ = w.Write(lastBody)
+				return
 			}
-			continue
+			if s.manager.CanRetry(response.StatusCode) && attempt < maxAttempts {
+				s.manager.Finish(selected, response.StatusCode, usage, nil)
+				s.manager.SetAccountStatus(selected.Key.Name, accountStatus, accountMessage)
+				if response.StatusCode == http.StatusForbidden {
+					if s.manager.AvailableKeyCount() == 0 {
+						writeHeaders(w, lastHeaders)
+						w.WriteHeader(lastStatus)
+						_, _ = w.Write(lastBody)
+						return
+					}
+					// A 403 may be account-specific. Replay on one healthy account,
+					// but never continue through the rest of the rotation pool.
+					maxAttempts = attempt + 1
+				}
+				continue
+			}
+			s.manager.Finish(selected, response.StatusCode, usage, nil)
+			s.manager.SetAccountStatus(selected.Key.Name, accountStatus, accountMessage)
+			writeHeaders(w, lastHeaders)
+			w.WriteHeader(lastStatus)
+			_, _ = w.Write(lastBody)
+			return
 		}
 
 		if stream && response.StatusCode < 400 {
@@ -697,6 +732,17 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "all upstream attempts failed"})
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (s *Server) streamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, selected rotation.Selected) {
