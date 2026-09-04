@@ -84,7 +84,7 @@ func TestProxyFailsOverAfterRateLimit(t *testing.T) {
 				t.Errorf("first upstream authorization = %q", got)
 			}
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"quota"}`))
+			_, _ = w.Write([]byte(`{"error":"usage quota exhausted"}`))
 			return
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer second-key" {
@@ -138,6 +138,106 @@ func TestProxyFailsOverAfterRateLimit(t *testing.T) {
 	}
 	if body["usage"] == nil {
 		t.Fatal("response lost usage object")
+	}
+}
+
+func TestProxyRetriesShortRateLimitOnSameAccount(t *testing.T) {
+	previousDelay := rateLimitRetryDelay
+	rateLimitRetryDelay = time.Millisecond
+	t.Cleanup(func() { rateLimitRetryDelay = previousDelay })
+	var calls atomic.Int32
+	var authorizations []string
+	var requestBodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		requestBodies = append(requestBodies, string(body))
+		authorizations = append(authorizations, r.Header.Get("Authorization"))
+		if calls.Load() <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporarily rate limited"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`))
+	}))
+	defer upstream.Close()
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Rotation.Enabled = true
+	c.Rotation.MaxAttempts = 2
+	c.ActiveKey = "first"
+	c.Keys = []config.KeyConfig{{Name: "first", Enabled: true, APIKey: "first-key"}, {Name: "second", Enabled: true, APIKey: "second-key"}}
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+	body := `{"model":"kimi-for-coding","messages":[{"role":"user","content":"continue me"}]}`
+	req, _ := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || calls.Load() != 3 {
+		t.Fatalf("status=%d calls=%d, want status=200 calls=3", response.StatusCode, calls.Load())
+	}
+	if strings.Join(authorizations, ",") != "Bearer first-key,Bearer first-key,Bearer first-key" {
+		t.Fatalf("authorizations=%v", authorizations)
+	}
+	if len(requestBodies) != 3 || requestBodies[0] != body || requestBodies[1] != body || requestBodies[2] != body {
+		t.Fatalf("request body was not replayed: %v", requestBodies)
+	}
+	_, state := manager.Snapshot()
+	if state.Keys["first"].CooldownUntil.After(time.Now().UTC()) || state.Keys["first"].LastCheckStatus != "ok" {
+		t.Fatalf("short rate limit cooled account: %+v", state.Keys["first"])
+	}
+}
+
+func TestProxyCancelsRateLimitWaitWithoutCoolingAccount(t *testing.T) {
+	previousDelay := rateLimitRetryDelay
+	rateLimitRetryDelay = time.Hour
+	t.Cleanup(func() { rateLimitRetryDelay = previousDelay })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporarily rate limited"}}`))
+	}))
+	defer upstream.Close()
+	c := config.Default()
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.LocalAPIKey = "local"
+	c.Keys = []config.KeyConfig{{Name: "first", Enabled: true, APIKey: "first-key"}}
+	c.ActiveKey = "first"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	req.Header.Set("Authorization", "Bearer local")
+	done := make(chan error, 1)
+	go func() {
+		response, requestErr := http.DefaultClient.Do(req)
+		if response != nil {
+			response.Body.Close()
+		}
+		done <- requestErr
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if requestErr := <-done; requestErr == nil {
+		t.Fatal("expected canceled request")
+	}
+	_, state := manager.Snapshot()
+	if state.Keys["first"].CooldownUntil.After(time.Now().UTC()) || state.Keys["first"].Failures != 1 {
+		t.Fatalf("canceled rate-limit wait changed account state: %+v", state.Keys["first"])
 	}
 }
 
