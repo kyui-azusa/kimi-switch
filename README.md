@@ -1,33 +1,115 @@
+<div align="center">
+
+<img src="assets/branding/kimi-switch-icon-master.png" width="96" alt="KimiSwitch icon">
+
 # KimiSwitch
 
-KimiSwitch is a Tauri desktop app and local-only Kimi Code API-key pool for personal or authorized internal use.
+**Kimi Code quota exhausted? Keep working — switch to another account in one click.**
 
-Its desktop information architecture, visual tokens, and selected UI wrappers are adapted from [CC Switch](https://github.com/farion1231/cc-switch) under the MIT License to keep the workflow familiar. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). KimiSwitch is not affiliated with Moonshot AI, Kimi, or the CC Switch project.
+KimiSwitch is a desktop app that pools your authorized Kimi Code API keys behind a local proxy
+and fails over automatically when an account runs out of quota, hits a rate limit, or stops responding.
 
-Project behavior and design decisions are recorded in [`docs/`](docs/README.md).
-Updater signing, release-server deployment, and rollback are documented in [`docs/updates.md`](docs/updates.md).
+**[Download for macOS & Windows](https://github.com/kyui-azusa/kimi-switch/releases/latest)** · [简体中文](README.zh-CN.md)
 
-## What it does
+[![GitHub Release](https://img.shields.io/github/v/release/kyui-azusa/kimi-switch)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/kyui-azusa/kimi-switch/total)](https://github.com/kyui-azusa/kimi-switch/releases)
+[![License: MIT](https://img.shields.io/github/license/kyui-azusa/kimi-switch)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
 
-- Runs a loopback proxy on `127.0.0.1:15722`, avoiding CC Switch's default `15721` port.
-- Keeps the desktop app and proxy running from the system tray when the main window is closed. Use the tray icon to reopen KimiSwitch or quit it completely.
-- Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) instead of command-line arguments.
-- Supports manual active-key switching.
-- Supports an optional automatic rotation mode:
+<!-- TODO: add docs/screenshot.png — a capture of the account list and usage page -->
+
+</div>
+
+## Why KimiSwitch
+
+Kimi Code limits each account in five-hour and weekly windows. When your current account hits
+the limit, the usual fix is to edit `~/.kimi-code/config.toml` by hand, paste in another key, and
+restart your session. KimiSwitch automates that whole routine:
+
+- **One-click account switching** — import your existing Kimi providers and switch the active account from a desktop UI.
+- **Automatic failover when quota runs out** — with rotation enabled, an exhausted, rate-limited, or failing account is swapped for a healthy one, and the request is retried in place so your Kimi Code session keeps going.
+- **Honest quota handling** — KimiSwitch never scrapes undocumented quota pages, never spoofs the client identity, and never claims that locally observed usage equals an account's remaining quota.
+
+## Features
+
+- Runs a loopback proxy on `127.0.0.1:15722` (avoiding CC Switch's default `15721`).
+- Keeps Kimi API keys in environment variables or the OS credential store (macOS Keychain / Windows Credential Manager) — never in command-line arguments.
+- Manual active-key switching, plus an optional automatic rotation mode:
   - `sticky`: keeps using the current key and only fails over when quota is exhausted, authentication fails, rate limits hit, or the upstream becomes unavailable.
-- Retries a request on an upstream 401, 429, or 5xx response only when rotation is enabled and no successful stream has started.
-- Puts rate-limited keys into a cooldown window.
-- Provides per-account and test-all availability checks using a one-output-token completion, so authentication-only success cannot hide an exhausted quota.
-- Classifies observed failures as exhausted quota, temporary rate limit, invalid key, disabled account, network failure, or upstream failure using HTTP status, provider error type, and message text.
-- Quarantines failed accounts for at least 10 minutes. Healthy accounts are always preferred; a cooled account is retried only when no enabled healthy account remains.
-- Records per-key and per-day request, success, error, input, output, cache-read, reasoning, observed-total, and estimated-token statistics.
-- Phase 1 supports manually recording quota refresh reference times for the five-hour window and weekly window. These values are informational only and never drive rotation, health, or quota decisions.
-- Provides a separate Kimi Code direct/KimiSwitch takeover switch. Takeover changes only model-provider routing, preserves the original provider, creates `~/.kimi-code/config.toml.kimiswitch.bak`, and can restore direct mode atomically.
-- Does not scrape undocumented quota pages, spoof the client identity, or claim that locally observed usage is an account's remaining quota.
+- Retries a request on an upstream 401, 403, 429, or 5xx response only when rotation is enabled and no successful stream has started. A short upstream 429 is re-sent inside the same HTTP request so the original Kimi Code session continues.
+- Classifies observed failures as exhausted quota, temporary rate limit, invalid key, disabled account, network failure, or upstream failure. Network errors never poison account health.
+- Quarantines failed accounts for at least 10 minutes. Healthy accounts are always preferred.
+- Per-account availability checks use a one-output-token completion, so an authentication-only success cannot hide an exhausted quota.
+- Records per-key and per-day request, success, error, input, output, cache-read, reasoning, observed-total, and estimated-token statistics, with 7/30-day trends.
+- Manages the Kimi Code direct/KimiSwitch takeover switch: takeover changes only model-provider routing in `~/.kimi-code/config.toml`, preserves the original provider, creates `~/.kimi-code/config.toml.kimiswitch.bak`, and restores direct mode atomically.
+- Keeps running in the system tray when the window is closed; updates itself in-app via signed releases.
+
+## Download
+
+Grab the installer from the [latest release](https://github.com/kyui-azusa/kimi-switch/releases/latest):
+
+| Platform | Installer |
+| --- | --- |
+| macOS Apple Silicon | `KimiSwitch_<version>_darwin-aarch64.dmg` |
+| macOS Intel | `KimiSwitch_<version>_darwin-x86_64.dmg` |
+| Windows x64 | `KimiSwitch_<version>_windows-x86_64-setup.exe` |
+
+After the first manual install, later releases update in-app from the settings page.
+Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
-Desktop development:
+1. Launch KimiSwitch — it starts a local proxy on `127.0.0.1:15722`.
+2. Click **Import** to read `api_key` values from your existing `~/.kimi-code/config.toml` into the OS credential store. Import is read-only; OAuth-only providers are skipped.
+3. Turn on **KimiSwitch takeover**. Your models now route through the local proxy; the original provider block is preserved and a one-time backup is written. Run `/reload` in an already-running Kimi Code session.
+4. Optionally enable **automatic rotation** (`sticky` mode). When the active account stops working, KimiSwitch fails over to the next healthy account and retries the request.
+
+To go back, flip the takeover switch off — the original provider references are restored.
+
+## How it compares
+
+| | Editing `config.toml` by hand | [CC Switch](https://github.com/farion1231/cc-switch) | KimiSwitch |
+| --- | --- | --- | --- |
+| Switch the active Kimi account | Edit file, restart session | One click | One click |
+| Automatic failover when quota is exhausted | No | No | Yes, with in-place retry |
+| Quota-exhaustion vs. rate-limit classification | No | No | Yes |
+| Per-account token usage stats for Kimi | No | No | Yes (input / output / cache-read / reasoning) |
+| Key storage | Plain text in config | Plain text in config | OS credential store or env vars |
+| In-app signed auto-update | — | Yes | Yes, with a fallback update source |
+
+KimiSwitch's desktop information architecture, visual tokens, and selected UI wrappers are adapted
+from CC Switch under the MIT License — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The
+multi-account pooling, failover proxy, and Kimi-specific usage accounting are original work.
+
+## What KimiSwitch does NOT do
+
+- It does not create quota. It rotates among **your own authorized accounts**; each account keeps its own plan limits.
+- It does not scrape undocumented quota pages or unofficial endpoints.
+- It does not spoof the client identity or modify requests beyond swapping the API key.
+- It does not treat locally observed usage as an account's remaining quota. Manually recorded refresh times are displayed as `手动参考 · 非官方` and never drive rotation, health, or quota decisions.
+
+KimiSwitch is for personal or authorized internal use and is not affiliated with Moonshot AI, Kimi, or the CC Switch project.
+
+## FAQ
+
+**Will switching accounts break my running Kimi Code session?**
+No. Takeover only changes provider routing in `config.toml`. Run `/reload` in a live session (new sessions pick it up directly). When rotation fails over mid-request, the proxy re-sends the request on the new account within the same HTTP connection when possible.
+
+**Where are my API keys stored?**
+In environment variables or the OS credential store (macOS Keychain / Windows Credential Manager). Keys never appear in command-line arguments. The proxy keeps request bodies in memory only while forwarding; persistent state contains metadata and usage counters, not prompts or responses.
+
+**Does it work on Windows?**
+Yes — macOS (Apple Silicon and Intel) and Windows x64 installers are published for every release.
+
+**What happens if all accounts are limited?**
+The proxy returns the original upstream error instead of retrying forever. Cooled-down accounts are only retried when no healthy enabled account remains.
+
+**How do I update?**
+From the settings page — the app checks a signed update manifest, verifies the minisign signature, downloads, installs, and restarts. The primary update source is a static server with the GitHub release as automatic fallback.
+
+## Development
+
+Requires Node 22, pnpm, Go 1.24, and a Rust toolchain.
 
 ```sh
 cd kimi-switch
@@ -38,96 +120,14 @@ pnpm tauri:dev
 The Tauri app builds and starts the Go proxy as a bundled sidecar. The CLI remains available for scripting:
 
 ```sh
-cd kimi-switch
 go run ./cmd/kimi-switch init
 go run ./cmd/kimi-switch add work --env KIMI_WORK_KEY
-go run ./cmd/kimi-switch add personal --env KIMI_PERSONAL_KEY
 export KIMI_WORK_KEY='your-work-key'
-export KIMI_PERSONAL_KEY='your-personal-key'
 go run ./cmd/kimi-switch rotation on sticky
 go run ./cmd/kimi-switch serve
 ```
 
-## Desktop installers
-
-Build the macOS disk image locally:
-
-```sh
-pnpm tauri build --bundles dmg
-```
-
-The bundled app and installer show the original KimiSwitch icon and the attribution `Powered by kyuiazusa`. The icon uses a white sideways-pi switch mark with a small green status element; it is not a Kimi or CC Switch product mark.
-
-The GitHub Actions workflow in `.github/workflows/build-installers.yml` builds signed Tauri updater artifacts for macOS Apple Silicon, macOS Intel, and Windows x86_64 on version tags such as `v0.2.0`. It publishes the platform files and a validated `latest.json` only after every build succeeds. Updater signatures are separate from Apple Developer ID/notarization and Windows Authenticode installer signing.
-
-Updater support started with `0.2.0`; the current release and the full release history are listed in [CHANGELOG.md](CHANGELOG.md). Existing `0.1.x` users must install any `0.2.x` release manually once; later releases can be checked, downloaded, installed, and restarted from the settings page.
-
-For system credential storage:
-
-```sh
-go run ./cmd/kimi-switch secret-set kimi-switch/work
-go run ./cmd/kimi-switch add work --secret-ref kimi-switch/work
-```
-
-The proxy expects the client to send the local proxy key configured as `local_api_key`. The generated default is `local-kimi-switch`.
-
-To generate Kimi Code CLI's temporary model environment variables:
-
-```sh
-go run ./cmd/kimi-switch print-config
-```
-
-The important values are conceptually:
-
-```sh
-export KIMI_MODEL_NAME='kimi-for-coding'
-export KIMI_MODEL_API_KEY='local-kimi-switch'
-export KIMI_MODEL_BASE_URL='http://127.0.0.1:15722/v1'
-kimi
-```
-
-The local proxy consumes the client key and injects the selected upstream key. The Kimi Code CLI currently distinguishes API-key direct connections from OAuth-managed endpoints, and its model environment variables support a custom base URL; use the API-key path for this proxy.
-
-## Import existing Kimi providers
-
-KimiSwitch can extract `api_key` from `[providers.<name>]` or `KIMI_API_KEY` from `[providers.<name>.env]` in `~/.kimi-code/config.toml` and copy the values into macOS Keychain or Windows Credential Manager. It does not rewrite or delete the Kimi config:
-
-```sh
-go run ./cmd/kimi-switch init
-go run ./cmd/kimi-switch import-kimi
-```
-
-OAuth-only providers are intentionally skipped. The importer is for API-key providers only.
-
-## Kimi Code takeover switch
-
-The desktop header has two independent switches:
-
-- **Kimi Code direct / KimiSwitch takeover** controls whether models in `~/.kimi-code/config.toml` use their original provider or the local KimiSwitch provider.
-- **Automatic rotation** controls whether KimiSwitch keeps the current account sticky and fails over only when that account stops working.
-
-Import remains read-only. Enabling takeover keeps the original provider block intact, writes a marked `kimi-switch-local` provider, redirects only model `provider` references that used the active original provider, and creates a one-time backup. Disabling takeover restores those references and removes the managed block. After either change, run `/reload` in an already-running Kimi Code session; new sessions read the new configuration directly.
-
-The usage page follows the familiar CC Switch breakdown while adapting it to Kimi's response fields: input, output, cache-read, reasoning, total, request outcomes, per-account totals, and 7/30-day trends. Real token values come from upstream `usage`; requests without a usable `usage` object are shown separately as estimates.
-
-## Manual quota refresh references
-
-[#2](https://github.com/kyui-azusa/kimi-switch/issues/2) delivers the manual first phase. [#13](https://github.com/kyui-azusa/kimi-switch/issues/13) tracks official synchronization as a separate second phase.
-
-- Phase 1 stores user-entered reference timestamps for the five-hour window and weekly window.
-- The desktop app and legacy web form show these values in local time for easier manual entry.
-- The persisted config and status API use UTC RFC3339 timestamps such as `2026-08-21T09:00:00Z`.
-- The desktop app shows these values as `手动参考 · 非官方`.
-- They are only for arranging real verification tests and observation.
-- They must not be treated as authoritative remaining-quota data, and they must not affect rotation, account health, or automatic switching.
-
-The only authoritative source of truth is a value that is directly provided by the official upstream, can be re-checked reliably, and has clear provenance. Manual entries, test observations, derived estimates, `imported_at`, `Retry-After`, and error messages are all reference signals only until such an official field exists and is synchronized.
-
-See [docs/README.md](docs/README.md) and [docs/account-health.md](docs/account-health.md) for the phase-1 wording used by the desktop UI.
-
-## Admin endpoints
-
-All admin endpoints use the same local bearer key as the proxy.
+Admin endpoints (all behind the local proxy bearer key, default `local-kimi-switch`):
 
 ```text
 GET  /healthz
@@ -139,15 +139,23 @@ POST /api/keys/<name>/use
 POST /api/keys/<name>/test
 ```
 
-The proxy keeps request bodies only in memory while forwarding them. Persistent state contains metadata and usage counters, not prompts or responses.
-
-## Verification
+Verification:
 
 ```sh
 go test ./...
 go vet ./...
+pnpm test:update-manifest
 ```
+
+## Documentation
+
+- [docs/README.md](docs/README.md) — behavior and design decisions
+- [docs/updates.md](docs/updates.md) — updater signing, dual update sources, release-server deployment, and rollback
+- [docs/account-health.md](docs/account-health.md) — failure classification and cooldown rules
+- [docs/takeover-recovery.md](docs/takeover-recovery.md) — takeover state recovery
+- [CHANGELOG.md](CHANGELOG.md) — release history
 
 ## License
 
-KimiSwitch is released under the MIT License. The CC Switch project is a separate project with its own license and attribution requirements.
+KimiSwitch is released under the [MIT License](LICENSE). The CC Switch project is a separate
+project with its own license and attribution requirements; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
