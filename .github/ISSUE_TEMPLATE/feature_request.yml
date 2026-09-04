@@ -1,0 +1,31 @@
+name: Feature request / 功能建议
+description: Suggest a change to how KimiSwitch behaves / 提出一个功能想法
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        KimiSwitch rotates among accounts you already control. Requests to scrape undocumented quota
+        endpoints, spoof client identity, or otherwise obtain quota you were not granted are out of
+        scope. 本项目只在你自己已授权的账号之间轮换，不做绕过配额的功能。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you hitting / 你遇到的问题
+      description: Describe the situation, not the solution. What are you doing when this gets in your way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen / 期望的行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead / 目前的替代做法
+      description: Manual workarounds, other tools, or why the current behavior does not fit.

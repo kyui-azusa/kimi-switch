@@ -1,0 +1,70 @@
+name: Bug report / 问题反馈
+description: Something in KimiSwitch does not work as documented / 报告一个缺陷
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste real API keys, `.sig` contents, or full `config.toml` files.** Redact keys to a
+        short prefix such as `sk-abc…`.
+        请不要粘贴真实的 API Key 或完整的 `config.toml`，只保留前缀即可。
+
+        Found a security problem? Do not file it here — see [SECURITY.md](https://github.com/kyui-azusa/kimi-switch/blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: KimiSwitch version / 版本
+      description: Settings shows a version and build number, e.g. `0.2.12 (build 0.2.0904.2)`.
+      placeholder: "0.2.12 (build 0.2.0904.2)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows x64
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: state
+    attributes:
+      label: Settings in use / 相关设置
+      options:
+        - label: KimiSwitch takeover is on / 已开启接管
+        - label: Automatic rotation is on / 已开启自动轮换
+        - label: Keys are stored in the OS credential store / 使用系统凭据存储
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened / 问题描述
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Errors or status output / 报错信息
+      description: |
+        Any on-screen error, plus the output of `curl -H "Authorization: Bearer <local key>" http://127.0.0.1:15722/api/status`
+        if the proxy is running. Redact anything sensitive.
+      render: text
