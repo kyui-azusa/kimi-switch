@@ -49,3 +49,39 @@ test("rejects an incomplete release before latest.json is written", async () => 
     notes: "Incomplete",
   }), /missing updater artifact|ENOENT/);
 });
+
+test("writes a GitHub fallback manifest with rebased URLs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kimiswitch-manifest-github-"));
+  const artifacts = join(root, "artifacts");
+  const output = join(root, "output");
+  const fixtures = [
+    ["kimiswitch-macos-aarch64", "KimiSwitch.app.tar.gz", "arm-signature"],
+    ["kimiswitch-macos-x86_64", "KimiSwitch.app.tar.gz", "intel-signature"],
+    ["kimiswitch-windows-x86_64", "KimiSwitch_0.2.0_x64-setup.exe", "windows-signature"],
+  ];
+  for (const [artifact, file, signature] of fixtures) {
+    const directory = join(artifacts, artifact);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, file), `${artifact}-content`);
+    writeFileSync(join(directory, `${file}.sig`), signature);
+  }
+
+  const { manifest, manifestPath, githubManifest, githubManifestPath } = buildManifest({
+    artifactsDirectory: artifacts,
+    outputDirectory: output,
+    version: "v0.2.0",
+    baseUrl: "https://updates.example.com/kimi-switch/releases/v0.2.0",
+    githubBaseUrl: "https://github.com/kyui-azusa/kimi-switch/releases/download/v0.2.0/",
+    notes: "Updater release",
+    publishedAt: new Date("2026-08-18T00:00:00Z"),
+  });
+
+  assert.match(manifest.platforms["darwin-aarch64"].url, /^https:\/\/updates\.example\.com\/kimi-switch\/releases\/v0\.2\.0\//);
+  assert.equal(githubManifest.version, manifest.version);
+  assert.equal(githubManifest.pub_date, manifest.pub_date);
+  assert.equal(githubManifest.platforms["darwin-aarch64"].signature, "arm-signature");
+  assert.match(githubManifest.platforms["darwin-aarch64"].url, /^https:\/\/github\.com\/kyui-azusa\/kimi-switch\/releases\/download\/v0\.2\.0\/KimiSwitch_0\.2\.0_darwin-aarch64\.app\.tar\.gz$/);
+  assert.match(githubManifest.platforms["windows-x86_64"].url, /KimiSwitch_0\.2\.0_windows-x86_64-setup\.exe$/);
+  assert.deepEqual(JSON.parse(readFileSync(githubManifestPath, "utf8")), githubManifest);
+  assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), manifest);
+});
