@@ -25,10 +25,14 @@ import (
 const maxResponseBytes = 64 << 20
 
 const (
-	maxOverloadRetries = 2
+	maxOverloadRetries  = 2
+	maxRateLimitRetries = 2
 )
 
 var overloadRetryDelay = 2 * time.Second
+
+// rateLimitRetryDelay keeps the client connection open while a short-lived provider throttle clears.
+var rateLimitRetryDelay = 30 * time.Second
 
 var (
 	secretRead  = secret.Read
@@ -617,6 +621,7 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 	var lastBody []byte
 	var lastErr error
 	overloadRetries := 0
+	rateLimitRetries := 0
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		selected, selectErr := s.manager.Select(estimate, attempt)
@@ -669,6 +674,23 @@ func (s *Server) handleUpstream(w http.ResponseWriter, r *http.Request) {
 				if overloadRetries < maxOverloadRetries {
 					overloadRetries++
 					if !waitForRetry(r.Context(), overloadRetryDelay) {
+						return
+					}
+					attempt--
+					continue
+				}
+				writeHeaders(w, lastHeaders)
+				w.WriteHeader(lastStatus)
+				_, _ = w.Write(lastBody)
+				return
+			}
+			if response.StatusCode == http.StatusTooManyRequests && accountStatus == "rate_limited" && s.manager.CanRetry(response.StatusCode) {
+				// Keep the original HTTP request open and replay the exact cached
+				// body on the same account. Kimi Code remains in its conversation.
+				s.manager.FinishTransient(selected, response.StatusCode, usage, accountStatus, accountMessage)
+				if rateLimitRetries < maxRateLimitRetries {
+					rateLimitRetries++
+					if !waitForRetry(r.Context(), rateLimitRetryDelay) {
 						return
 					}
 					attempt--
