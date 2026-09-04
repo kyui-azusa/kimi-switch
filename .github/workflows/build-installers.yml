@@ -157,20 +157,22 @@ jobs:
         with:
           path: release-artifacts
 
-      - name: Generate and validate latest.json
+      - name: Generate and validate update manifests
         shell: bash
         run: |
           release_tag="${{ steps.release.outputs.tag }}"
+          github_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
           if [ -n "$UPDATE_BASE_URL" ]; then
             base_url="${UPDATE_BASE_URL%/}/releases/${release_tag}"
           else
-            base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+            base_url="$github_base_url"
           fi
           node scripts/build-update-manifest.mjs \
             --artifacts release-artifacts \
             --output release-files \
             --version "$release_tag" \
             --base-url "$base_url" \
+            --github-base-url "$github_base_url" \
             --notes "KimiSwitch ${release_tag}. The first updater-enabled release must be installed manually; later releases can update in-app."
 
       - name: Publish GitHub release assets
@@ -181,7 +183,9 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
           generate_release_notes: true
-          files: release-files/*
+          files: |
+            release-files/KimiSwitch_*
+            release-files/latest.github.json
 
       - name: Configure optional static-server SSH key
         if: env.UPDATE_DEPLOY_HOST != ''
@@ -203,5 +207,5 @@ jobs:
         shell: bash
         run: |
           release_path="${UPDATE_DEPLOY_PATH%/}/releases/${{ steps.release.outputs.tag }}"
-          rsync -av --mkpath -e "ssh -p $UPDATE_DEPLOY_PORT" --exclude latest.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
+          rsync -av --mkpath -e "ssh -p $UPDATE_DEPLOY_PORT" --exclude latest.json --exclude latest.github.json release-files/ "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:$release_path/"
           rsync -av -e "ssh -p $UPDATE_DEPLOY_PORT" release-files/latest.json "${UPDATE_DEPLOY_USER}@${UPDATE_DEPLOY_HOST}:${UPDATE_DEPLOY_PATH%/}/latest.json"

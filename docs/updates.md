@@ -32,14 +32,17 @@ Every release must add one entry at the top of `src/lib/changelog.ts` with the b
 1. Keep the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` identical.
 2. Push a matching tag such as `v0.2.0`.
 3. GitHub Actions builds macOS Apple Silicon, macOS Intel, and Windows x86_64 artifacts with `TAURI_SIGNING_PRIVATE_KEY`.
-4. The publish job refuses to create `latest.json` unless all three updater archives and signatures are present.
-5. The workflow publishes versioned files first and `latest.json` last, so a partial build cannot replace the previous usable manifest.
+4. The publish job refuses to create the manifests unless all three updater archives and signatures are present.
+5. The workflow generates two manifests from the same artifacts: `latest.json` points at the static update server and `latest.github.json` points at the GitHub release. It publishes versioned files first and each manifest last, so a partial build cannot replace the previous usable manifest.
 
-The checked-in endpoint uses the shared update server and keeps KimiSwitch in its own application directory:
+The checked-in endpoints prefer the shared update server and fall back to the GitHub release, keeping KimiSwitch in its own application directory:
 
 ```text
 https://updates.cihua.run/kimi-switch/latest.json
+https://github.com/kyui-azusa/kimi-switch/releases/latest/download/latest.github.json
 ```
+
+The updater tries the endpoints in order, so the static server answers day-to-day checks while the GitHub release remains a working fallback if the server is unreachable. The fallback requires the repository to be public: release assets of a private repository need authentication and the updater cannot fetch them. Releases up to `0.2.12` only know the static-server endpoint, so the server must keep serving `latest.json` until those clients have updated.
 
 The same host can serve other applications from sibling paths such as `/other-app/`. Give each application its own deployment account and directory so one CI key cannot overwrite another application's releases.
 
@@ -57,7 +60,7 @@ The workflow mirrors release files to the HTTPS static directory. Configure thes
 | `UPDATE_DEPLOY_SSH_KEY` | Private write-only deployment key (separate from the updater signing key) |
 | `UPDATE_DEPLOY_KNOWN_HOSTS` | Pinned SSH host-key line for the deployment server |
 
-The workflow appends `/releases/<tag>` to `UPDATE_BASE_URL` when it writes artifact URLs. Serve `latest.json` as `application/json` with `Cache-Control: no-cache, max-age=0`. Versioned archives and `.sig` files should use long-lived immutable caching. Keep directory listing disabled and allow only HTTPS.
+The workflow appends `/releases/<tag>` to `UPDATE_BASE_URL` when it writes artifact URLs in `latest.json`. The fallback manifest `latest.github.json` uses the GitHub release download URL instead and is attached to the release, not mirrored to the static server. Serve `latest.json` as `application/json` with `Cache-Control: no-cache, max-age=0`. Versioned archives and `.sig` files should use long-lived immutable caching. Keep directory listing disabled and allow only HTTPS.
 
 The deployment account is restricted with `rrsync -wo` to the KimiSwitch application directory. The workflow uses rsync's atomic file replacement for `latest.json`, so it does not need shell, `scp`, or `mv` access on the server.
 

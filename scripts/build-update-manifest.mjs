@@ -28,22 +28,22 @@ function updaterSuffix(path) {
   throw new Error(`unsupported updater artifact: ${path}`);
 }
 
-export function buildManifest({ artifactsDirectory, outputDirectory, version, baseUrl, notes, publishedAt = new Date() }) {
+export function buildManifest({ artifactsDirectory, outputDirectory, version, baseUrl, githubBaseUrl, notes, publishedAt = new Date() }) {
   const cleanVersion = version.replace(/^v/, "");
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(cleanVersion)) {
     throw new Error(`invalid release version: ${version}`);
   }
-  if (!baseUrl.startsWith("https://")) {
-    throw new Error("update base URL must use HTTPS");
+  if (!baseUrl) {
+    throw new Error("update base URL is required");
+  }
+  for (const url of [baseUrl, githubBaseUrl].filter(Boolean)) {
+    if (!url.startsWith("https://")) {
+      throw new Error("update base URL must use HTTPS");
+    }
   }
 
   mkdirSync(outputDirectory, { recursive: true });
-  const manifest = {
-    version: cleanVersion,
-    notes,
-    pub_date: publishedAt.toISOString(),
-    platforms: {},
-  };
+  const platformEntries = {};
 
   for (const platform of platforms) {
     const artifactDirectory = join(artifactsDirectory, platform.artifact);
@@ -57,9 +57,9 @@ export function buildManifest({ artifactsDirectory, outputDirectory, version, ba
     const signatureName = `${updaterName}.sig`;
     copyFileSync(updater, join(outputDirectory, updaterName));
     copyFileSync(signaturePath, join(outputDirectory, signatureName));
-    manifest.platforms[platform.key] = {
+    platformEntries[platform.key] = {
       signature: readFileSync(signaturePath, "utf8").trim(),
-      url: `${baseUrl.replace(/\/$/, "")}/${updaterName}`,
+      updaterName,
     };
 
     for (const installer of files.filter((path) => path.endsWith(".dmg"))) {
@@ -68,9 +68,32 @@ export function buildManifest({ artifactsDirectory, outputDirectory, version, ba
     }
   }
 
+  const renderManifest = (url) => ({
+    version: cleanVersion,
+    notes,
+    pub_date: publishedAt.toISOString(),
+    platforms: Object.fromEntries(
+      Object.entries(platformEntries).map(([key, { signature, updaterName }]) => [
+        key,
+        { signature, url: `${url.replace(/\/$/, "")}/${updaterName}` },
+      ]),
+    ),
+  });
+
+  const manifest = renderManifest(baseUrl);
   const manifestPath = join(outputDirectory, "latest.json");
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  return { manifest, manifestPath };
+  const result = { manifest, manifestPath };
+
+  if (githubBaseUrl) {
+    const githubManifest = renderManifest(githubBaseUrl);
+    const githubManifestPath = join(outputDirectory, "latest.github.json");
+    writeFileSync(githubManifestPath, `${JSON.stringify(githubManifest, null, 2)}\n`);
+    result.githubManifest = githubManifest;
+    result.githubManifestPath = githubManifestPath;
+  }
+
+  return result;
 }
 
 function parseArguments(argv) {
@@ -91,7 +114,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     outputDirectory: resolve(options.output),
     version: options.version,
     baseUrl: options["base-url"],
+    githubBaseUrl: options["github-base-url"],
     notes: options.notes || `KimiSwitch ${options.version}`,
   });
-  process.stdout.write(`${basename(result.manifestPath)}: ${Object.keys(result.manifest.platforms).join(", ")}\n`);
+  const manifests = [result.manifestPath, result.githubManifestPath].filter(Boolean).map(basename);
+  process.stdout.write(`${manifests.join(", ")}: ${Object.keys(result.manifest.platforms).join(", ")}\n`);
 }
