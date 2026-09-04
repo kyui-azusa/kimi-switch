@@ -14,6 +14,7 @@ import {
   GripVertical,
   Info,
   KeyRound,
+  List,
   Moon,
   Play,
   Plus,
@@ -284,41 +285,46 @@ function UpdatePanel({ initialUpdate, onBack, notify }: {
 function ChangelogPanel({ appVersion, onBack }: { appVersion: string; onBack: () => void }) {
   const currentVersion = appVersion.replace(/^v/, "");
   const currentBuildVersion = displayVersionForRelease(currentVersion);
+  const currentIndex = Math.max(0, changelog.findIndex((entry) => (entry.releaseVersion || entry.version) === currentVersion));
+  const [selectedIndex, setSelectedIndex] = useState(currentIndex);
+  const [mode, setMode] = useState<"list" | "detail">("list");
+  const selected = changelog[selectedIndex] || changelog[0];
+  const selectEntry = (index: number) => {
+    setSelectedIndex(index);
+    setMode("detail");
+  };
   return (
     <FullScreenPanel title="更新日志" subtitle={`当前构建 v${currentBuildVersion} · 发布版本 v${currentVersion}`} onBack={onBack}>
-      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-        {changelog.map((entry, index) => {
-          const current = (entry.releaseVersion || entry.version) === currentVersion;
-          return (
-            <section
-              key={entry.version}
-              aria-current={current ? "true" : undefined}
-              className={cn(
-                "grid gap-4 border-b border-border px-5 py-6 last:border-b-0 sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-6 sm:px-7",
-                current && "bg-blue-500/5",
-              )}
-            >
-              <div className="flex items-center justify-between gap-3 sm:block">
-                <div className="flex items-center gap-2">
-                  <span className={cn("text-base font-semibold tabular-nums", current && "text-blue-600 dark:text-blue-400")}>v{entry.version}</span>
-                  {current && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前版本</span>}
-                </div>
-                <time className="text-xs tabular-nums text-muted-foreground" dateTime={entry.date}>{entry.date.replaceAll("-", ".")}</time>
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-start gap-3">
-                  <span className={cn("mt-1.5 h-2 w-2 flex-shrink-0 rounded-full", index === 0 ? "bg-blue-500" : "bg-border")} />
-                  <h2 className="text-sm font-semibold leading-6 sm:text-base">{entry.title}</h2>
-                </div>
-                {entry.releaseVersion && entry.releaseVersion !== entry.version && <p className="mt-1 pl-5 text-xs tabular-nums text-muted-foreground">发布版本 v{entry.releaseVersion}</p>}
-                <ul className="mt-3 grid gap-2 pl-5 text-sm leading-6 text-muted-foreground">
-                  {entry.changes.map((change) => <li key={change} className="list-disc pl-1 marker:text-muted-foreground/60">{change}</li>)}
-                </ul>
-              </div>
-            </section>
-          );
-        })}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">{mode === "list" ? `${changelog.length} 个版本` : `v${selected.version}`}</span>
+        <div className="flex rounded-lg border border-border p-1" role="tablist" aria-label="更新日志视图">
+          <button type="button" role="tab" aria-selected={mode === "list"} onClick={() => setMode("list")} className={cn("flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs", mode === "list" ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted")}><List className="h-3.5 w-3.5" />列表</button>
+          <button type="button" role="tab" aria-selected={mode === "detail"} onClick={() => setMode("detail")} className={cn("flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs", mode === "detail" ? "bg-blue-500 text-white" : "text-muted-foreground hover:bg-muted")}>详情</button>
+        </div>
       </div>
+      {mode === "list" ? (
+        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm" role="list">
+          {changelog.map((entry, index) => {
+            const current = (entry.releaseVersion || entry.version) === currentVersion;
+            return <div key={entry.version} role="listitem" className="border-b border-border last:border-b-0"><button type="button" aria-current={current ? "true" : undefined} onClick={() => selectEntry(index)} className={cn("flex w-full items-center gap-3 px-4 py-4 text-left transition hover:bg-muted/50 sm:px-5", current && "bg-blue-500/5")}>
+              <span className={cn("h-2 w-2 flex-shrink-0 rounded-full", current ? "bg-blue-500" : "bg-border")} />
+              <span className={cn("w-28 flex-shrink-0 text-sm font-semibold tabular-nums", current && "text-blue-600 dark:text-blue-400")}>v{entry.version}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{entry.title}</span>
+              <span className="flex-shrink-0 text-xs tabular-nums text-muted-foreground">{entry.date.replaceAll("-", ".")}</span>
+              <span className="hidden flex-shrink-0 text-xs text-muted-foreground sm:inline">{entry.changes.length} 项</span>
+            </button></div>;
+          })}
+        </div>
+      ) : (
+        <article className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+          <div className="border-b border-border bg-blue-500/5 px-5 py-5 sm:px-7">
+            <button type="button" onClick={() => setMode("list")} className="mb-4 text-xs font-medium text-muted-foreground hover:text-foreground">返回列表</button>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><h2 className="text-lg font-semibold">{selected.title}</h2>{(selected.releaseVersion || selected.version) === currentVersion && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-600 dark:text-blue-400">当前版本</span>}</div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs tabular-nums text-muted-foreground"><time dateTime={selected.date}>{selected.date.replaceAll("-", ".")}</time><span>v{selected.version}</span>{selected.releaseVersion && selected.releaseVersion !== selected.version && <span>发布版本 v{selected.releaseVersion}</span>}</div>
+          </div>
+          <ul className="grid gap-3 px-5 py-6 text-sm leading-6 text-muted-foreground sm:px-7">{selected.changes.map((change) => <li key={change} className="list-disc pl-1 marker:text-muted-foreground/60">{change}</li>)}</ul>
+        </article>
+      )}
     </FullScreenPanel>
   );
 }

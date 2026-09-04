@@ -10,6 +10,17 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.2.0904.2",
+    releaseVersion: "0.2.12",
+    date: "2026-09-04",
+    title: "更新日志双模式与 429 自动续跑",
+    changes: [
+      "更新日志默认以紧凑列表展示版本、日期、标题和改动数量，点击后可查看单个版本详情。",
+      "上游短时限流返回 429 时，代理会在同一 HTTP 请求内等待后重发完整请求，尽量保持 Kimi Code 原会话继续执行。",
+      "429 短时重试不会把账号错误冷却 10 分钟；真实额度耗尽仍沿用账号轮换策略。",
+    ],
+  },
+  {
     version: "0.2.0904.1",
     releaseVersion: "0.2.11",
     date: "2026-09-04",
