@@ -30,7 +30,7 @@ Updater signing, release-server deployment, and rollback are documented in [`doc
 Desktop development:
 
 ```sh
-cd /Users/azusa/dev/open-source/kimi-switch
+cd kimi-switch
 pnpm install
 pnpm tauri:dev
 ```
@@ -38,7 +38,7 @@ pnpm tauri:dev
 The Tauri app builds and starts the Go proxy as a bundled sidecar. The CLI remains available for scripting:
 
 ```sh
-cd /Users/azusa/dev/open-source/kimi-switch
+cd kimi-switch
 go run ./cmd/kimi-switch init
 go run ./cmd/kimi-switch add work --env KIMI_WORK_KEY
 go run ./cmd/kimi-switch add personal --env KIMI_PERSONAL_KEY
@@ -60,7 +60,7 @@ The bundled app and installer show the original KimiSwitch icon and the attribut
 
 The GitHub Actions workflow in `.github/workflows/build-installers.yml` builds signed Tauri updater artifacts for macOS Apple Silicon, macOS Intel, and Windows x86_64 on version tags such as `v0.2.0`. It publishes the platform files and a validated `latest.json` only after every build succeeds. Updater signatures are separate from Apple Developer ID/notarization and Windows Authenticode installer signing.
 
-Version `0.2.0` is the first updater-enabled release. Existing `0.1.x` users must install it manually once; later releases can be checked, downloaded, installed, and restarted from the settings page.
+Updater support started with `0.2.0`; the current release and the full release history are listed in [CHANGELOG.md](CHANGELOG.md). Existing `0.1.x` users must install any `0.2.x` release manually once; later releases can be checked, downloaded, installed, and restarted from the settings page.
 
 For system credential storage:
 
