@@ -18,6 +18,15 @@ Updater signing verifies the downloaded update archive. It does not replace plat
 
 If the updater private key is lost, existing installations cannot trust artifacts signed by a replacement key. Rotate it only by shipping an app version that contains the new public key through the existing trusted channel first.
 
+## Version and changelog convention
+
+KimiSwitch keeps two version identifiers for each release:
+
+- The release version in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `latest.json` is standard SemVer (`MAJOR.MINOR.PATCH`). Tauri, Cargo, and the updater use this value for comparison and installation safety.
+- The app-facing build version uses `MAJOR.MINOR.MMDD.BUILD`, for example `0.2.0904.1`. `MMDD` is the release date and `BUILD` starts at 1 for each date. This value is shown in the title bar and settings so users can confirm the exact build they installed.
+
+Every release must add one entry at the top of `src/lib/changelog.ts` with the build version, release version, ISO date, title, and a concise list of user-visible changes. The changelog panel shows the full history and marks the installed release as current.
+
 ## Release workflow
 
 1. Keep the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` identical.

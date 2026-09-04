@@ -1,11 +1,25 @@
 export interface ChangelogEntry {
+  /** User-facing build identifier: 0.2.MMDD.build. */
   version: string;
+  /** SemVer used by Tauri/Cargo and the updater manifest. */
+  releaseVersion?: string;
   date: string;
   title: string;
   changes: string[];
 }
 
 export const changelog: ChangelogEntry[] = [
+  {
+    version: "0.2.0904.1",
+    releaseVersion: "0.2.11",
+    date: "2026-09-04",
+    title: "日期版号与完整更新历史",
+    changes: [
+      "新增应用内更新历史，按版本和发布日期记录每次更新的主要改动。",
+      "版本显示采用 0.2.MMDD.构建号格式，本次构建为 0.2.0904.1，便于确认实际安装的构建。",
+      "保留 0.2.11 作为兼容 Tauri、Cargo 和自动更新服务的标准 SemVer 发布版本。",
+    ],
+  },
   {
     version: "0.2.10",
     date: "2026-09-04",
@@ -102,3 +116,7 @@ export const changelog: ChangelogEntry[] = [
     ],
   },
 ];
+
+export function displayVersionForRelease(releaseVersion: string) {
+  return changelog.find((entry) => (entry.releaseVersion || entry.version) === releaseVersion)?.version || releaseVersion;
+}
