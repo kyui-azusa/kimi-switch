@@ -7,6 +7,16 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.2.10",
+    date: "2026-09-04",
+    title: "引擎过载短暂重试",
+    changes: [
+      "上游返回引擎过载 429 时先短暂退避并自动重试，不再把账号冷却 10 分钟。",
+      "引擎持续繁忙时保留原始 429 响应，账号仍可立即继续使用。",
+      "账号级限流和真实额度耗尽仍按原有冷却与换号策略处理。",
+    ],
+  },
+  {
     version: "0.2.9",
     date: "2026-09-01",
     title: "网络错误不再影响账号状态",

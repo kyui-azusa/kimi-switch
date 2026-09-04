@@ -50,7 +50,7 @@ export interface KeyStats {
   last_used_at?: string;
   last_error?: string;
   last_check_at?: string;
-  last_check_status?: "ok" | "quota_exhausted" | "rate_limited" | "invalid_key" | "account_disabled" | "forbidden" | "network_error" | "upstream_error" | "failed";
+  last_check_status?: "ok" | "quota_exhausted" | "rate_limited" | "upstream_overloaded" | "invalid_key" | "account_disabled" | "forbidden" | "network_error" | "upstream_error" | "failed";
   last_check_ms?: number;
 }
 

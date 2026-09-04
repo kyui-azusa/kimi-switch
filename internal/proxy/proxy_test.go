@@ -898,8 +898,58 @@ func TestClassifyProviderFailureDistinguishesQuotaAndOverload(t *testing.T) {
 		t.Fatalf("quota status = %q", status)
 	}
 	status, _ = classifyProviderFailure(429, []byte(`{"error":{"type":"engine_overloaded_error","message":"The engine is currently overloaded"}}`))
-	if status != "rate_limited" {
+	if status != "upstream_overloaded" {
 		t.Fatalf("overload status = %q", status)
+	}
+}
+
+func TestOverloadedEngineRetriesWithoutCoolingAccount(t *testing.T) {
+	originalDelay := overloadRetryDelay
+	overloadRetryDelay = time.Millisecond
+	defer func() { overloadRetryDelay = originalDelay }()
+
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"type":"engine_overloaded_error","message":"The engine is currently overloaded"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	c := config.Default()
+	c.LocalAPIKey = "local"
+	c.UpstreamBaseURL = upstream.URL + "/v1"
+	c.Keys = []config.KeyConfig{{Name: "work", Enabled: true, APIKey: "account-key"}}
+	c.ActiveKey = "work"
+	temp := t.TempDir()
+	manager, err := rotation.NewManager(c, filepath.Join(temp, "config.json"), filepath.Join(temp, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewServer(NewServer(manager))
+	defer local.Close()
+
+	req, err := http.NewRequest(http.MethodPost, local.URL+"/v1/chat/completions", strings.NewReader(`{"model":"kimi-for-coding","messages":[],"stream":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer local")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || attempts.Load() != 3 {
+		t.Fatalf("status=%d attempts=%d", response.StatusCode, attempts.Load())
+	}
+	_, state := manager.Snapshot()
+	stats := state.Keys["work"]
+	if stats.Failures != 2 || stats.Successes != 1 || !stats.CooldownUntil.IsZero() {
+		t.Fatalf("overload should not cool account: %+v", stats)
 	}
 }
 
