@@ -31,7 +31,7 @@ import {
 import { api, type ConnectivityResult, type DailyUsage, type KeyConfig, type KeyInput, type KeyStats, type QuotaRefreshRecord, type RotationConfig, type StatusResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { changelog } from "@/lib/changelog";
+import { changelog, displayVersionForRelease } from "@/lib/changelog";
 import { cn } from "@/lib/utils";
 
 type Panel =
@@ -283,11 +283,12 @@ function UpdatePanel({ initialUpdate, onBack, notify }: {
 
 function ChangelogPanel({ appVersion, onBack }: { appVersion: string; onBack: () => void }) {
   const currentVersion = appVersion.replace(/^v/, "");
+  const currentBuildVersion = displayVersionForRelease(currentVersion);
   return (
-    <FullScreenPanel title="更新日志" subtitle={`当前版本 v${currentVersion}`} onBack={onBack}>
+    <FullScreenPanel title="更新日志" subtitle={`当前构建 v${currentBuildVersion} · 发布版本 v${currentVersion}`} onBack={onBack}>
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         {changelog.map((entry, index) => {
-          const current = entry.version === currentVersion;
+          const current = (entry.releaseVersion || entry.version) === currentVersion;
           return (
             <section
               key={entry.version}
@@ -309,6 +310,7 @@ function ChangelogPanel({ appVersion, onBack }: { appVersion: string; onBack: ()
                   <span className={cn("mt-1.5 h-2 w-2 flex-shrink-0 rounded-full", index === 0 ? "bg-blue-500" : "bg-border")} />
                   <h2 className="text-sm font-semibold leading-6 sm:text-base">{entry.title}</h2>
                 </div>
+                {entry.releaseVersion && entry.releaseVersion !== entry.version && <p className="mt-1 pl-5 text-xs tabular-nums text-muted-foreground">发布版本 v{entry.releaseVersion}</p>}
                 <ul className="mt-3 grid gap-2 pl-5 text-sm leading-6 text-muted-foreground">
                   {entry.changes.map((change) => <li key={change} className="list-disc pl-1 marker:text-muted-foreground/60">{change}</li>)}
                 </ul>
@@ -438,6 +440,7 @@ function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setD
   onUpdates: () => void;
   onChangelog: () => void;
 }) {
+  const buildVersion = displayVersionForRelease(appVersion);
   const [upstream, setUpstream] = useState(status.config.upstream_base_url);
   const [rotation, setRotation] = useState<RotationConfig>({ ...status.config.rotation });
   const [saving, setSaving] = useState(false);
@@ -477,7 +480,7 @@ function SettingsPanel({ status, appVersion, onBack, onSaved, notify, dark, setD
           <div className="flex items-center justify-between"><div><h2 className="font-semibold">深色模式</h2><p className="mt-1 text-sm text-muted-foreground">只影响 KimiSwitch 桌面界面。</p></div><Button variant="outline" onClick={() => setDark(!dark)}>{dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}{dark ? "切换浅色" : "切换深色"}</Button></div>
         </section>
         <section className="rounded-xl border border-border bg-card p-6 shadow-sm">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">版本与更新</h2><p className="mt-1 text-sm text-muted-foreground">当前版本 v{appVersion}；查看版本变化或检查签名更新包。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChangelog}><ScrollText className="h-4 w-4" />更新日志</Button><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div></div>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">版本与更新</h2><p className="mt-1 text-sm text-muted-foreground">当前构建 v{buildVersion}；发布版本 v{appVersion}。查看版本变化或检查签名更新包。</p></div><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={onChangelog}><ScrollText className="h-4 w-4" />更新日志</Button><Button variant="outline" onClick={onUpdates}><Download className="h-4 w-4" />检查更新</Button></div></div>
         </section>
         <section className="rounded-xl border border-border bg-muted/30 p-5 text-sm text-muted-foreground">
           <p>KimiSwitch 的桌面界面排布和部分 UI 组件基于 CC Switch（MIT License）调整；代理与 Kimi 配置逻辑为 KimiSwitch 实现。</p>
@@ -711,6 +714,7 @@ export default function App() {
   const [deleting, setDeleting] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [appVersion, setAppVersion] = useState(packageMetadata.version);
+  const buildVersion = displayVersionForRelease(appVersion);
   const [draggedAccount, setDraggedAccount] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ name: string; edge: DropEdge } | null>(null);
   const [reordering, setReordering] = useState(false);
@@ -956,7 +960,7 @@ export default function App() {
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background text-foreground">
       <header className="flex h-16 flex-shrink-0 items-center justify-between gap-2 border-b border-border bg-background/85 px-3 backdrop-blur-md sm:px-6" data-tauri-drag-region>
-        <div className="no-drag flex min-w-0 items-center gap-1"><div className="mr-1 flex min-w-0 items-baseline gap-2"><span className="truncate text-base font-semibold text-blue-500 sm:text-xl">KimiSwitch</span><span className="hidden min-w-12 text-xs tabular-nums text-muted-foreground sm:inline">v{appVersion}</span></div><Button className="h-8 w-8" variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button>{availableUpdate && <Button className="h-8 w-8" variant="ghost" size="icon" title={`发现新版本 ${availableUpdate.version}`} onClick={() => setPanel({ kind: "updates", update: availableUpdate })}><Download className="h-4 w-4 text-blue-500" /></Button>}<Button className="h-8 w-8" variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
+        <div className="no-drag flex min-w-0 items-center gap-1"><div className="mr-1 flex min-w-0 items-baseline gap-2"><span className="truncate text-base font-semibold text-blue-500 sm:text-xl">KimiSwitch</span><span className="hidden min-w-12 text-xs tabular-nums text-muted-foreground sm:inline">v{buildVersion}</span></div><Button className="h-8 w-8" variant="ghost" size="icon" title="设置" onClick={() => setPanel({ kind: "settings" })}><Settings className="h-4 w-4" /></Button>{availableUpdate && <Button className="h-8 w-8" variant="ghost" size="icon" title={`发现新版本 ${availableUpdate.version}`} onClick={() => setPanel({ kind: "updates", update: availableUpdate })}><Download className="h-4 w-4 text-blue-500" /></Button>}<Button className="h-8 w-8" variant="ghost" size="icon" title="用量统计" onClick={() => setPanel({ kind: "usage" })}><Activity className="h-4 w-4" /></Button></div>
         <div className="no-drag flex flex-shrink-0 items-center gap-1 sm:gap-2">
           <span className="hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-600 sm:flex"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />代理运行中</span>
           <div className={cn("flex items-center gap-2 rounded-lg border px-2 py-1.5 sm:px-3", status.kimi_takeover.enabled ? "border-emerald-500/30 bg-emerald-500/5" : "border-border")} title={status.kimi_takeover.error || (status.kimi_takeover.config_error && `配置异常：${status.kimi_takeover.config_error}；重新切换开关可自动修复`) || `配置：${status.kimi_takeover.config_path}`}><span className="hidden text-xs text-muted-foreground lg:inline">{status.kimi_takeover.enabled ? "KimiSwitch 接管" : "Kimi Code 直连"}</span>{status.kimi_takeover.config_error && <span className="hidden text-xs text-amber-500 xl:inline">配置异常</span>}<Switch aria-label="KimiSwitch 接管" checked={status.kimi_takeover.enabled} disabled={!status.kimi_takeover.enabled && (status.config.keys.length === 0 || Boolean(status.kimi_takeover.error))} onCheckedChange={toggleTakeover} /></div>
