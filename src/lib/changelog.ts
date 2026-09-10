@@ -10,6 +10,16 @@ export interface ChangelogEntry {
 
 export const changelog: ChangelogEntry[] = [
   {
+    version: "0.2.0910.1",
+    releaseVersion: "0.2.13",
+    date: "2026-09-10",
+    title: "启用账号保留真实状态",
+    changes: [
+      "切换当前账号或加入轮换池时，不再清空最近一次检测结果、错误信息或冷却状态。",
+      "未做过连通性检测的账号显示为待检测，避免把配置操作误报为账号可用。",
+    ],
+  },
+  {
     version: "0.2.0904.2",
     releaseVersion: "0.2.12",
     date: "2026-09-04",

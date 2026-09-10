@@ -130,7 +130,10 @@ func (m *Manager) SetActive(name string) error {
 	originalCfg := m.cfg
 	originalState := cloneState(m.state)
 	m.cfg.Keys[index].Enabled = true
-	m.preferKeyLocked(name)
+	// Selecting an account is a configuration choice, not a connectivity
+	// test. Keep the last observed health/cooldown so the UI does not report
+	// an account as healthy merely because it was selected.
+	m.cfg.ActiveKey = name
 	if err := m.persistLocked(); err != nil {
 		m.cfg = originalCfg
 		m.state = originalState
@@ -257,9 +260,6 @@ func (m *Manager) SetKeyEnabled(name string, enabled bool) error {
 			originalCfg := m.cfg
 			originalState := cloneState(m.state)
 			m.cfg.Keys[i].Enabled = enabled
-			if enabled {
-				m.preferKeyLocked(name)
-			}
 			if err := m.persistLocked(); err != nil {
 				m.cfg = originalCfg
 				m.state = originalState

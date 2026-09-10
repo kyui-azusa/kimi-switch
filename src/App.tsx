@@ -140,7 +140,7 @@ function statusOf(key: KeyConfig, stats: KeyStats) {
   }
   if (stats.last_error) return { label: "最近失败", color: "bg-red-500", text: "text-red-500" };
   if (stats.last_check_status === "ok") return { label: `连通 · ${stats.last_check_ms || 0} ms`, color: "bg-emerald-500", text: "text-emerald-600" };
-  return { label: "可用", color: "bg-emerald-500", text: "text-emerald-600" };
+  return { label: "待检测", color: "bg-gray-400", text: "text-gray-500" };
 }
 
 function reorderAccounts(keys: KeyConfig[], draggedName: string, targetName: string, edge: DropEdge) {
