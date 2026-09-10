@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { mkdtemp } from "node:fs/promises";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { buildManifest } from "./build-update-manifest.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("builds a complete signed manifest for all supported platforms", async () => {
   const root = await mkdtemp(join(tmpdir(), "kimiswitch-manifest-"));
@@ -84,4 +89,31 @@ test("writes a GitHub fallback manifest with rebased URLs", async () => {
   assert.match(githubManifest.platforms["windows-x86_64"].url, /KimiSwitch_0\.2\.0_windows-x86_64-setup\.exe$/);
   assert.deepEqual(JSON.parse(readFileSync(githubManifestPath, "utf8")), githubManifest);
   assert.deepEqual(JSON.parse(readFileSync(manifestPath, "utf8")), manifest);
+});
+
+test("CLI prints manifest basenames on Node 22", async () => {
+  const root = await mkdtemp(join(tmpdir(), "kimiswitch-manifest-cli-"));
+  const artifacts = join(root, "artifacts");
+  const output = join(root, "output");
+  const fixtures = [
+    ["kimiswitch-macos-aarch64", "KimiSwitch.app.tar.gz"],
+    ["kimiswitch-macos-x86_64", "KimiSwitch.app.tar.gz"],
+    ["kimiswitch-windows-x86_64", "KimiSwitch_0.2.0_x64-setup.exe"],
+  ];
+  for (const [artifact, file] of fixtures) {
+    const directory = join(artifacts, artifact);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, file), `${artifact}-content`);
+    writeFileSync(join(directory, `${file}.sig`), "signature");
+  }
+
+  const { stdout } = await execFileAsync(process.execPath, [
+    fileURLToPath(new URL("./build-update-manifest.mjs", import.meta.url)),
+    "--artifacts", artifacts,
+    "--output", output,
+    "--version", "v0.2.0",
+    "--base-url", "https://updates.example.com/kimi-switch/releases/v0.2.0",
+    "--github-base-url", "https://github.com/kyui-azusa/kimi-switch/releases/download/v0.2.0",
+  ]);
+  assert.match(stdout, /latest\.json, latest\.github\.json/);
 });

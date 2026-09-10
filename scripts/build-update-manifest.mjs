@@ -117,6 +117,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     githubBaseUrl: options["github-base-url"],
     notes: options.notes || `KimiSwitch ${options.version}`,
   });
-  const manifests = [result.manifestPath, result.githubManifestPath].filter(Boolean).map(basename);
+  const manifests = [result.manifestPath, result.githubManifestPath].filter(Boolean).map((filePath) => basename(filePath));
   process.stdout.write(`${manifests.join(", ")}: ${Object.keys(result.manifest.platforms).join(", ")}\n`);
 }
