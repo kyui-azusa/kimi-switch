@@ -278,20 +278,13 @@ func TestSetActiveImmediatelyChangesStickyKey(t *testing.T) {
 	if err := manager.SetActive("b"); err != nil {
 		t.Fatal(err)
 	}
-	manager.MarkCooldown("b", "rate limited")
+	manager.SetAccountStatus("b", "quota_exhausted", "quota exhausted")
 	if err := manager.SetActive("b"); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := manager.Select(0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.Key.Name != "b" {
-		t.Fatalf("selected %q, want b", selected.Key.Name)
-	}
 	_, state := manager.Snapshot()
-	if !state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError != "" || state.Keys["b"].LastCheckStatus != "" {
-		t.Fatalf("manual switch should clear cooldown state: %+v", state.Keys["b"])
+	if state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError == "" || state.Keys["b"].LastCheckStatus != "quota_exhausted" {
+		t.Fatalf("manual switch should preserve health state: %+v", state.Keys["b"])
 	}
 }
 
@@ -321,7 +314,7 @@ func TestSetActiveEnablesDisabledKeyImmediately(t *testing.T) {
 	}
 }
 
-func TestEnableKeyMakesItStickyImmediately(t *testing.T) {
+func TestEnableKeyPreservesHealthAndActiveKey(t *testing.T) {
 	c := config.Default()
 	c.Keys = []config.KeyConfig{{Name: "a", Enabled: true, APIKey: "a"}, {Name: "b", Enabled: false, APIKey: "b"}}
 	c.ActiveKey = "a"
@@ -331,23 +324,16 @@ func TestEnableKeyMakesItStickyImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.MarkCooldown("b", "manual re-enable")
+	manager.SetAccountStatus("b", "quota_exhausted", "manual re-enable")
 	if err := manager.SetKeyEnabled("b", true); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := manager.Select(0, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.Key.Name != "b" {
-		t.Fatalf("selected %q, want b", selected.Key.Name)
-	}
 	_, state := manager.Snapshot()
-	if got := manager.Config().ActiveKey; got != "b" {
-		t.Fatalf("active key = %q, want b", got)
+	if got := manager.Config().ActiveKey; got != "a" {
+		t.Fatalf("active key = %q, want a", got)
 	}
-	if !state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError != "" || state.Keys["b"].LastCheckStatus != "" {
-		t.Fatalf("enabled key should clear cooldown state: %+v", state.Keys["b"])
+	if state.Keys["b"].CooldownUntil.IsZero() || state.Keys["b"].LastError == "" || state.Keys["b"].LastCheckStatus != "quota_exhausted" {
+		t.Fatalf("enabling a key should preserve health state: %+v", state.Keys["b"])
 	}
 }
 
