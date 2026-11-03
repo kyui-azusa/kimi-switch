@@ -16,7 +16,7 @@ KimiSwitch 是一个桌面应用：把你名下的多个 Kimi Code API Key 汇�
 [![License: MIT](https://img.shields.io/github/license/kyui-azusa/kimi-switch)](LICENSE)
 [![平台](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
 
-<!-- TODO: 补充 docs/screenshot.png —— 账号列表与用量页截图 -->
+<img src="docs/screenshot.png" width="820" alt="KimiSwitch 账号列表，已开启接管与自动轮换">
 
 </div>
 

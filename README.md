@@ -16,7 +16,7 @@ and fails over automatically when an account runs out of quota, hits a rate limi
 [![License: MIT](https://img.shields.io/github/license/kyui-azusa/kimi-switch)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
 
-<!-- TODO: add docs/screenshot.png — a capture of the account list and usage page -->
+<img src="docs/screenshot.png" width="820" alt="KimiSwitch showing five pooled Kimi Code accounts with takeover and automatic rotation enabled">
 
 </div>
 
