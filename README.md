@@ -12,6 +12,7 @@ and fails over automatically when an account runs out of quota, hits a rate limi
 **[Download for macOS & Windows](https://github.com/kyui-azusa/kimi-switch/releases/latest)** · [简体中文](README.zh-CN.md)
 
 [![GitHub Release](https://img.shields.io/github/v/release/kyui-azusa/kimi-switch)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
+[![CI](https://github.com/kyui-azusa/kimi-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/kyui-azusa/kimi-switch/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/github/downloads/kyui-azusa/kimi-switch/total)](https://github.com/kyui-azusa/kimi-switch/releases)
 [![License: MIT](https://img.shields.io/github/license/kyui-azusa/kimi-switch)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
@@ -154,6 +155,16 @@ pnpm test:update-manifest
 - [docs/account-health.md](docs/account-health.md) — failure classification and cooldown rules
 - [docs/takeover-recovery.md](docs/takeover-recovery.md) — takeover state recovery
 - [CHANGELOG.md](CHANGELOG.md) — release history
+- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup and pull-request checks
+- [SECURITY.md](SECURITY.md) — security model and private vulnerability reporting
+
+## Contributing
+
+Issues and pull requests are welcome, in English or 中文. [CONTRIBUTING.md](CONTRIBUTING.md) covers
+the development setup, the project layout, and the checks CI runs on every pull request.
+
+Found a security problem? Do not open a public issue — report it privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

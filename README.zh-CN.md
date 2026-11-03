@@ -12,6 +12,7 @@ KimiSwitch 是一个桌面应用：把你名下的多个 Kimi Code API Key 汇�
 **[下载 macOS / Windows 安装包](https://github.com/kyui-azusa/kimi-switch/releases/latest)** · [English](README.md)
 
 [![GitHub Release](https://img.shields.io/github/v/release/kyui-azusa/kimi-switch)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
+[![CI](https://github.com/kyui-azusa/kimi-switch/actions/workflows/ci.yml/badge.svg)](https://github.com/kyui-azusa/kimi-switch/actions/workflows/ci.yml)
 [![下载量](https://img.shields.io/github/downloads/kyui-azusa/kimi-switch/total)](https://github.com/kyui-azusa/kimi-switch/releases)
 [![License: MIT](https://img.shields.io/github/license/kyui-azusa/kimi-switch)](LICENSE)
 [![平台](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)](https://github.com/kyui-azusa/kimi-switch/releases/latest)
@@ -151,6 +152,15 @@ pnpm test:update-manifest
 - [docs/account-health.md](docs/account-health.md) —— 故障分类与冷却规则
 - [docs/takeover-recovery.md](docs/takeover-recovery.md) —— 接管状态恢复
 - [CHANGELOG.md](CHANGELOG.md) —— 发布历史
+- [CONTRIBUTING.md](CONTRIBUTING.md) —— 开发环境与提交前检查
+- [SECURITY.md](SECURITY.md) —— 安全模型与漏洞报告
+
+## 参与贡献
+
+欢迎提 issue 和 PR，中英文皆可。[CONTRIBUTING.md](CONTRIBUTING.md) 说明了开发环境、目录结构，
+以及每个 PR 在 CI 上会跑的检查。
+
+发现安全问题请不要公开提 issue，按 [SECURITY.md](SECURITY.md) 的方式私下反馈。
 
 ## 许可证
 
